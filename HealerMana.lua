@@ -146,8 +146,13 @@ local INNERVATE_SPELL_NAME = GetSpellInfo(29166) or "Innervate";
 local MANA_TIDE_BUFF_NAME = GetSpellInfo(16191) or "Mana Tide Totem";
 local DRINKING_SPELL_NAME = GetSpellInfo(430) or "Drink";
 local MANA_TIDE_CAST_SPELL_ID = 16190;
+local BLOODLUST_SPELL_ID = 2825;
+local HEROISM_SPELL_ID = 32182;
+local POWER_INFUSION_SPELL_ID = 10060;
+local DIVINE_INTERVENTION_SPELL_ID = 19752;
 
 -- Raid-wide cooldown spells tracked at the bottom of the display
+-- Multi-rank spells share a single info table referenced by all rank IDs
 local RAID_COOLDOWN_SPELLS = {
     [INNERVATE_SPELL_ID] = {
         name = INNERVATE_SPELL_NAME,
@@ -159,7 +164,51 @@ local RAID_COOLDOWN_SPELLS = {
         icon = select(3, GetSpellInfo(MANA_TIDE_CAST_SPELL_ID)),
         duration = 300,
     },
+    [BLOODLUST_SPELL_ID] = {
+        name = GetSpellInfo(BLOODLUST_SPELL_ID) or "Bloodlust",
+        icon = select(3, GetSpellInfo(BLOODLUST_SPELL_ID)),
+        duration = 600,
+    },
+    [HEROISM_SPELL_ID] = {
+        name = GetSpellInfo(HEROISM_SPELL_ID) or "Heroism",
+        icon = select(3, GetSpellInfo(HEROISM_SPELL_ID)),
+        duration = 600,
+    },
+    [POWER_INFUSION_SPELL_ID] = {
+        name = GetSpellInfo(POWER_INFUSION_SPELL_ID) or "Power Infusion",
+        icon = select(3, GetSpellInfo(POWER_INFUSION_SPELL_ID)),
+        duration = 180,
+    },
+    [DIVINE_INTERVENTION_SPELL_ID] = {
+        name = GetSpellInfo(DIVINE_INTERVENTION_SPELL_ID) or "Divine Intervention",
+        icon = select(3, GetSpellInfo(DIVINE_INTERVENTION_SPELL_ID)),
+        duration = 3600,
+    },
 };
+
+-- Rebirth (6 ranks, all same CD) — shared info referenced by each rank ID
+local rebirthInfo = {
+    name = GetSpellInfo(20484) or "Rebirth",
+    icon = select(3, GetSpellInfo(20484)),
+    duration = 1200,
+};
+RAID_COOLDOWN_SPELLS[20484] = rebirthInfo;  -- Rank 1
+RAID_COOLDOWN_SPELLS[20739] = rebirthInfo;  -- Rank 2
+RAID_COOLDOWN_SPELLS[20742] = rebirthInfo;  -- Rank 3
+RAID_COOLDOWN_SPELLS[20747] = rebirthInfo;  -- Rank 4
+RAID_COOLDOWN_SPELLS[20748] = rebirthInfo;  -- Rank 5
+RAID_COOLDOWN_SPELLS[26994] = rebirthInfo;  -- Rank 6
+
+-- Lay on Hands (4 ranks, all same CD) — shared info referenced by each rank ID
+local layOnHandsInfo = {
+    name = GetSpellInfo(633) or "Lay on Hands",
+    icon = select(3, GetSpellInfo(633)),
+    duration = 3600,
+};
+RAID_COOLDOWN_SPELLS[633]   = layOnHandsInfo;  -- Rank 1
+RAID_COOLDOWN_SPELLS[2800]  = layOnHandsInfo;  -- Rank 2
+RAID_COOLDOWN_SPELLS[10310] = layOnHandsInfo;  -- Rank 3
+RAID_COOLDOWN_SPELLS[27154] = layOnHandsInfo;  -- Rank 4
 
 --------------------------------------------------------------------------------
 -- State Variables
@@ -1399,6 +1448,11 @@ local function StartPreview()
     local now = GetTime();
     local innervateInfo = RAID_COOLDOWN_SPELLS[INNERVATE_SPELL_ID];
     local manaTideInfo = RAID_COOLDOWN_SPELLS[MANA_TIDE_CAST_SPELL_ID];
+    local bloodlustInfo = RAID_COOLDOWN_SPELLS[BLOODLUST_SPELL_ID];
+    local heroismInfo = RAID_COOLDOWN_SPELLS[HEROISM_SPELL_ID];
+    -- Show Bloodlust or Heroism based on player faction
+    local blInfo = (UnitFactionGroup("player") == "Horde") and bloodlustInfo or heroismInfo;
+    local blSpellId = (UnitFactionGroup("player") == "Horde") and BLOODLUST_SPELL_ID or HEROISM_SPELL_ID;
     raidCooldowns["preview-inn"] = {
         sourceGUID = "preview-guid-2",
         name = "Treehugger",
@@ -1416,6 +1470,24 @@ local function StartPreview()
         icon = manaTideInfo.icon,
         spellName = manaTideInfo.name,
         expiryTime = now + 180,
+    };
+    raidCooldowns["preview-bl"] = {
+        sourceGUID = "preview-guid-4",
+        name = "Tidecaller",
+        classFile = "SHAMAN",
+        spellId = blSpellId,
+        icon = blInfo.icon,
+        spellName = blInfo.name,
+        expiryTime = now + 420,
+    };
+    raidCooldowns["preview-rebirth"] = {
+        sourceGUID = "preview-guid-2",
+        name = "Treehugger",
+        classFile = "DRUID",
+        spellId = 20484,
+        icon = rebirthInfo.icon,
+        spellName = rebirthInfo.name,
+        expiryTime = now + 900,
     };
 
     -- Unlock frame for dragging while options are open
