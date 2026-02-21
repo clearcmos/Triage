@@ -1193,6 +1193,12 @@ HealerManaFrame.separator:SetHeight(1);
 HealerManaFrame.separator:SetColorTexture(0.5, 0.5, 0.5, 0.4);
 HealerManaFrame.separator:Hide();
 
+-- Cooldown section title (merged mode)
+HealerManaFrame.cdTitle = HealerManaFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
+HealerManaFrame.cdTitle:SetJustifyH("CENTER");
+HealerManaFrame.cdTitle:SetText("Raid Cooldowns");
+HealerManaFrame.cdTitle:Hide();
+
 -- Separator line above cooldown section
 HealerManaFrame.cdSeparator = HealerManaFrame:CreateTexture(nil, "ARTWORK");
 HealerManaFrame.cdSeparator:SetHeight(1);
@@ -1845,7 +1851,8 @@ local function RefreshHealerDisplay(sortedHealers)
 
     yOffset = RenderHealerRows(HealerManaFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth);
 
-    -- Hide merged-mode cd separator
+    -- Hide merged-mode cd elements
+    HealerManaFrame.cdTitle:Hide();
     HealerManaFrame.cdSeparator:Hide();
 
     local totalHeight = -yOffset + BOTTOM_PADDING;
@@ -1955,6 +1962,7 @@ local function RefreshMergedDisplay(sortedHealers)
 
     -- Raid cooldown section (merged)
     ReleaseAllCdRows();
+    HealerManaFrame.cdTitle:Hide();
     HealerManaFrame.cdSeparator:Hide();
 
     if db.showRaidCooldowns then
@@ -1966,7 +1974,19 @@ local function RefreshMergedDisplay(sortedHealers)
         end
 
         if hasCooldowns then
-            yOffset = yOffset - 4;
+            -- "Raid Cooldowns" title (centered, like Avg Mana)
+            yOffset = yOffset - TOP_PADDING;
+            HealerManaFrame.cdTitle:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+            HealerManaFrame.cdTitle:SetTextColor(1, 0.82, 0);
+            HealerManaFrame.cdTitle:ClearAllPoints();
+            HealerManaFrame.cdTitle:SetPoint("TOP", HealerManaFrame, "TOP", 0, yOffset);
+            HealerManaFrame.cdTitle:Show();
+
+            local cdTitleWidth = MeasureText("Raid Cooldowns", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+            if cdTitleWidth > totalWidth then totalWidth = cdTitleWidth; end
+
+            yOffset = yOffset - rowHeight;
+
             HealerManaFrame.cdSeparator:ClearAllPoints();
             HealerManaFrame.cdSeparator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
             HealerManaFrame.cdSeparator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
