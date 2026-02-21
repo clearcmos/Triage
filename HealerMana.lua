@@ -210,6 +210,26 @@ RAID_COOLDOWN_SPELLS[2800]  = layOnHandsInfo;  -- Rank 2
 RAID_COOLDOWN_SPELLS[10310] = layOnHandsInfo;  -- Rank 3
 RAID_COOLDOWN_SPELLS[27154] = layOnHandsInfo;  -- Rank 4
 
+-- Canonical spell ID for multi-rank spells (any rank → rank 1 for consistent keys)
+local CANONICAL_SPELL_ID = {
+    [20484] = 20484, [20739] = 20484, [20742] = 20484,
+    [20747] = 20484, [20748] = 20484, [26994] = 20484,  -- Rebirth
+    [633] = 633, [2800] = 633, [10310] = 633, [27154] = 633,  -- Lay on Hands
+};
+
+-- Class-baseline raid cooldowns (every member of the class has these)
+local CLASS_COOLDOWN_SPELLS = {
+    ["DRUID"] = { INNERVATE_SPELL_ID, 20484 },                   -- Innervate, Rebirth
+    ["PALADIN"] = { 633, DIVINE_INTERVENTION_SPELL_ID },          -- Lay on Hands, Divine Intervention
+    -- Shaman BL/Heroism handled separately (faction-dependent)
+};
+
+-- Talent-based cooldowns to check for player via IsSpellKnown
+local TALENT_COOLDOWN_SPELLS = {
+    ["SHAMAN"] = { MANA_TIDE_CAST_SPELL_ID },
+    ["PRIEST"] = { POWER_INFUSION_SPELL_ID },
+};
+
 --------------------------------------------------------------------------------
 -- State Variables
 --------------------------------------------------------------------------------
@@ -639,6 +659,85 @@ ScanGroupComposition = function()
             raidCooldowns[key] = nil;
         end
     end
+
+    -- Seed "Ready" cooldowns for class-baseline abilities
+    for _, unit in ipairs(units) do
+        local guid = UnitGUID(unit);
+        if guid then
+            local _, classFile = UnitClass(unit);
+            local name = UnitName(unit);
+
+            -- Class-baseline cooldowns
+            local spells = CLASS_COOLDOWN_SPELLS[classFile];
+            if spells then
+                for _, spellId in ipairs(spells) do
+                    local canonical = CANONICAL_SPELL_ID[spellId] or spellId;
+                    local key = guid .. "-" .. canonical;
+                    if not raidCooldowns[key] then
+                        local cdInfo = RAID_COOLDOWN_SPELLS[spellId];
+                        if cdInfo then
+                            raidCooldowns[key] = {
+                                sourceGUID = guid,
+                                name = name or "Unknown",
+                                classFile = classFile or "UNKNOWN",
+                                spellId = canonical,
+                                icon = cdInfo.icon,
+                                spellName = cdInfo.name,
+                                expiryTime = 0,
+                            };
+                        end
+                    end
+                end
+            end
+
+            -- Shaman: BL/Heroism based on faction
+            if classFile == "SHAMAN" then
+                local faction = UnitFactionGroup(unit);
+                local blSpellId = (faction == "Horde") and BLOODLUST_SPELL_ID or HEROISM_SPELL_ID;
+                local key = guid .. "-" .. blSpellId;
+                if not raidCooldowns[key] then
+                    local cdInfo = RAID_COOLDOWN_SPELLS[blSpellId];
+                    if cdInfo then
+                        raidCooldowns[key] = {
+                            sourceGUID = guid,
+                            name = name or "Unknown",
+                            classFile = classFile,
+                            spellId = blSpellId,
+                            icon = cdInfo.icon,
+                            spellName = cdInfo.name,
+                            expiryTime = 0,
+                        };
+                    end
+                end
+            end
+
+            -- Player only: check talent-based cooldowns via IsSpellKnown
+            if UnitIsUnit(unit, "player") then
+                local talentSpells = TALENT_COOLDOWN_SPELLS[classFile];
+                if talentSpells then
+                    for _, spellId in ipairs(talentSpells) do
+                        if IsSpellKnown(spellId) then
+                            local key = guid .. "-" .. spellId;
+                            if not raidCooldowns[key] then
+                                local cdInfo = RAID_COOLDOWN_SPELLS[spellId];
+                                if cdInfo then
+                                    raidCooldowns[key] = {
+                                        sourceGUID = guid,
+                                        name = name or "Unknown",
+                                        classFile = classFile or "UNKNOWN",
+                                        spellId = spellId,
+                                        icon = cdInfo.icon,
+                                        spellName = cdInfo.name,
+                                        expiryTime = 0,
+                                    };
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
 end
 
 local function GetSortedHealers()
@@ -753,12 +852,8 @@ end
 --------------------------------------------------------------------------------
 
 local function CleanExpiredCooldowns()
-    local now = GetTime();
-    for key, entry in pairs(raidCooldowns) do
-        if entry.expiryTime <= now then
-            raidCooldowns[key] = nil;
-        end
-    end
+    -- No-op: keep expired entries so they show as "Ready"
+    -- Entries are removed only when the caster leaves the group (ScanGroupComposition)
 end
 
 --------------------------------------------------------------------------------
@@ -785,12 +880,13 @@ local function ProcessCombatLog()
         -- Verify source is in our group (COMBATLOG_OBJECT_AFFILIATION_MINE/PARTY/RAID = 0x07)
         if sourceFlags and band(sourceFlags, 0x07) ~= 0 then
             local _, engClass = GetPlayerInfoByGUID(sourceGUID);
-            local key = sourceGUID .. "-" .. spellId;
+            local canonical = CANONICAL_SPELL_ID[spellId] or spellId;
+            local key = sourceGUID .. "-" .. canonical;
             raidCooldowns[key] = {
                 sourceGUID = sourceGUID,
                 name = sourceName or "Unknown",
                 classFile = engClass or "UNKNOWN",
-                spellId = spellId,
+                spellId = canonical,
                 icon = cdInfo.icon,
                 spellName = cdInfo.name,
                 expiryTime = GetTime() + cdInfo.duration,
@@ -1233,7 +1329,11 @@ RefreshDisplay = function()
         end
 
         if #sortedCooldownCache > 0 then
+            local now = GetTime();
             sort(sortedCooldownCache, function(a, b)
+                local aReady = a.expiryTime <= now;
+                local bReady = b.expiryTime <= now;
+                if aReady ~= bReady then return bReady; end  -- on-CD first, ready last
                 return a.expiryTime < b.expiryTime;
             end);
 
@@ -1255,8 +1355,13 @@ RefreshDisplay = function()
             for _, entry in ipairs(sortedCooldownCache) do
                 local nw = MeasureText(entry.name, cdFontSize);
                 if nw > cdNameMax then cdNameMax = nw; end
-                local remaining = max(0, entry.expiryTime - now);
-                local timerStr = format("%d:%02d", floor(remaining / 60), floor(remaining) % 60);
+                local timerStr;
+                if entry.expiryTime <= now then
+                    timerStr = "Ready";
+                else
+                    local remaining = entry.expiryTime - now;
+                    timerStr = format("%d:%02d", floor(remaining / 60), floor(remaining) % 60);
+                end
                 local tw = MeasureText(timerStr, cdFontSize);
                 if tw > cdTimerMax then cdTimerMax = tw; end
             end
@@ -1286,9 +1391,14 @@ RefreshDisplay = function()
                 cdRow.timerText:ClearAllPoints();
                 cdRow.timerText:SetPoint("LEFT", cdRow.nameText, "RIGHT", colGap, 0);
                 cdRow.timerText:SetFont(fontPath, cdFontSize, "OUTLINE");
-                local remaining = max(0, entry.expiryTime - now);
-                cdRow.timerText:SetText(format("%d:%02d", floor(remaining / 60), floor(remaining) % 60));
-                cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
+                if entry.expiryTime <= now then
+                    cdRow.timerText:SetText("Ready");
+                    cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
+                else
+                    local remaining = entry.expiryTime - now;
+                    cdRow.timerText:SetText(format("%d:%02d", floor(remaining / 60), floor(remaining) % 60));
+                    cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
+                end
 
                 cdRow:SetSize(totalWidth, rowHeight);
                 cdRow:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", leftMargin, yOffset);
@@ -1346,10 +1456,14 @@ HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
                     end
                 end
             end
-            -- Loop preview raid cooldown timers
-            for _, entry in pairs(raidCooldowns) do
+            -- Loop some preview raid cooldown timers; leave others as "Ready"
+            for key, entry in pairs(raidCooldowns) do
                 if entry.expiryTime <= now then
-                    entry.expiryTime = now + RAID_COOLDOWN_SPELLS[entry.spellId].duration;
+                    if key == "preview-inn" or key == "preview-rebirth" then
+                        -- Leave expired so they show "Ready"
+                    else
+                        entry.expiryTime = now + RAID_COOLDOWN_SPELLS[entry.spellId].duration;
+                    end
                 end
             end
         else
@@ -1460,7 +1574,7 @@ local function StartPreview()
         spellId = INNERVATE_SPELL_ID,
         icon = innervateInfo.icon,
         spellName = innervateInfo.name,
-        expiryTime = now + 240,
+        expiryTime = now - 1,  -- starts as "Ready"
     };
     raidCooldowns["preview-tide"] = {
         sourceGUID = "preview-guid-4",
