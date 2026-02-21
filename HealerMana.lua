@@ -22,7 +22,6 @@ local DEFAULT_SETTINGS = {
     showSymbolOfHope = true,
     showPotionCooldown = true,
     showAverageMana = true,
-    shortenedStatus = true,
     showStatusDuration = false,
     showSolo = false,
     sendWarnings = false,
@@ -421,34 +420,28 @@ end
 local function FormatStatusText(data)
     wipe(statusLabelParts);
     wipe(statusDurParts);
-    local short = db.shortenedStatus;
     local now = GetTime();
 
     -- Soulstone shown on dead healers (manaPercent == -2)
     if db.showSoulstone and data.hasSoulstone and data.manaPercent == -2 then
-        local label = short and "SS" or "Soulstone";
-        tinsert(statusLabelParts, format("|cff9482c9%s|r", label));
+        tinsert(statusLabelParts, format("|cff9482c9%s|r", "Soulstone"));
         tinsert(statusDurParts, "");
     end
 
     if data.isDrinking and db.showDrinking then
-        local label = short and "Drink" or "Drinking";
-        tinsert(statusLabelParts, format("|cff55ccff%s|r", label));
+        tinsert(statusLabelParts, format("|cff55ccff%s|r", "Drinking"));
         tinsert(statusDurParts, FormatDuration(data.drinkExpiry, now));
     end
     if data.hasInnervate and db.showInnervate then
-        local label = short and "Inn" or "Innervate";
-        tinsert(statusLabelParts, format("|cffba55d3%s|r", label));
+        tinsert(statusLabelParts, format("|cffba55d3%s|r", "Innervate"));
         tinsert(statusDurParts, FormatDuration(data.innervateExpiry, now));
     end
     if data.hasManaTide and db.showManaTide then
-        local label = short and "Tide" or "Mana Tide";
-        tinsert(statusLabelParts, format("|cff00c8ff%s|r", label));
+        tinsert(statusLabelParts, format("|cff00c8ff%s|r", "Mana Tide"));
         tinsert(statusDurParts, FormatDuration(data.manaTideExpiry, now));
     end
     if data.hasSymbolOfHope and db.showSymbolOfHope then
-        local label = short and "SoH" or "Symbol of Hope";
-        tinsert(statusLabelParts, format("|cffffff80%s|r", label));
+        tinsert(statusLabelParts, format("|cffffff80%s|r", "Symbol of Hope"));
         tinsert(statusDurParts, FormatDuration(data.symbolOfHopeExpiry, now));
     end
     if db.showPotionCooldown and data.potionExpiry and data.potionExpiry > now
@@ -459,8 +452,7 @@ local function FormatStatusText(data)
         local remaining = floor(data.potionExpiry - now);
         local minutes = floor(remaining / 60);
         local seconds = remaining % 60;
-        local label = short and "Pot" or "Potion";
-        tinsert(statusLabelParts, format("|cffffaa00%s|r", label));
+        tinsert(statusLabelParts, format("|cffffaa00%s|r", "Potion"));
         tinsert(statusDurParts, format("%d:%02d", minutes, seconds));
     end
 
@@ -2248,9 +2240,6 @@ local function RegisterSettings()
     AddCheckbox("showRaidCooldowns", "Raid Cooldowns",
         "Display raid cooldown tracker below healer mana bars.");
 
-    AddCheckbox("shortenedStatus", "Shortened Labels",
-        "Use abbreviated labels (e.g. 'Inn' instead of 'Innervate').");
-
     AddCheckbox("showStatusDuration", "Buff Durations",
         "Display remaining duration on status indicators.");
 
@@ -2359,6 +2348,7 @@ local function OnEvent(self, event, ...)
         db.warningThresholdHigh = nil;
         db.warningThresholdMed = nil;
         db.warningThresholdLow = nil;
+        db.shortenedStatus = nil;
 
         -- Register native settings panel
         RegisterSettings();
