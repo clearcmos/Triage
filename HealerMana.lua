@@ -2055,7 +2055,7 @@ end
 
 -- Shared layout constants
 local FONT_PATH = "Fonts\\FRIZQT__.TTF";
-local COL_GAP = 6;
+local COL_GAP = 2;
 local LEFT_MARGIN = 10;
 local RIGHT_MARGIN = 10;
 local TOP_PADDING = 8;
@@ -2159,7 +2159,7 @@ local function PrepareHealerRowData(sortedHealers)
     end
 
     local pad = max(4, floor(db.fontSize * 0.35 + 0.5));
-    maxNameWidth = maxNameWidth + pad;
+    maxNameWidth = maxNameWidth + 1;
     maxManaWidth = maxManaWidth + pad;
     if maxStatusLabelWidth > 0 then
         maxStatusLabelWidth = maxStatusLabelWidth + pad;
@@ -2314,8 +2314,9 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
     end
 
     local cdPad = max(4, floor(cdFontSize * 0.35 + 0.5));
-    cdNameMax = cdNameMax + cdPad;
-    cdTimerMax = cdTimerMax + cdPad;
+    local cdHalfPad = max(2, floor(cdPad * 0.5 + 0.5));
+    cdNameMax = cdNameMax + cdHalfPad;
+    cdTimerMax = cdTimerMax + cdHalfPad;
 
     if useIcons then
         cdSpellMax = cdIconSize + cdPad;
