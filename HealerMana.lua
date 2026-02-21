@@ -1182,10 +1182,10 @@ HealerManaFrame:SetMovable(true);
 HealerManaFrame:EnableMouse(true);
 HealerManaFrame:Hide();
 
--- Title / average mana text (centered)
+-- Title / average mana text
 HealerManaFrame.title = HealerManaFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall");
-HealerManaFrame.title:SetPoint("TOP", 0, -7);
-HealerManaFrame.title:SetJustifyH("CENTER");
+HealerManaFrame.title:SetPoint("TOPLEFT", 10, -8);
+HealerManaFrame.title:SetJustifyH("LEFT");
 
 -- Separator line below header
 HealerManaFrame.separator = HealerManaFrame:CreateTexture(nil, "ARTWORK");
@@ -1195,7 +1195,7 @@ HealerManaFrame.separator:Hide();
 
 -- Cooldown section title (merged mode)
 HealerManaFrame.cdTitle = HealerManaFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
-HealerManaFrame.cdTitle:SetJustifyH("CENTER");
+HealerManaFrame.cdTitle:SetJustifyH("LEFT");
 HealerManaFrame.cdTitle:SetText("Raid Cooldowns");
 HealerManaFrame.cdTitle:Hide();
 
@@ -1270,11 +1270,25 @@ resizeHandle:SetScript("OnMouseUp", function(self)
     self:SetScript("OnUpdate", nil);
 end);
 
--- Hover-to-show (disabled — dynamic auto-sizing makes manual resize unnecessary)
--- Kept for potential experimental testing later.
 local function UpdateResizeHandleVisibility()
-    resizeHandle:Hide();
+    if db and db.locked then
+        if not resizeDragging then
+            resizeHandle:Hide();
+        end
+        return;
+    end
+    if resizeDragging then return; end
+    if HealerManaFrame:IsMouseOver() or resizeHandle:IsMouseOver() then
+        resizeHandle:Show();
+    else
+        resizeHandle:Hide();
+    end
 end
+
+HealerManaFrame:HookScript("OnEnter", function() UpdateResizeHandleVisibility(); end);
+HealerManaFrame:HookScript("OnLeave", function() UpdateResizeHandleVisibility(); end);
+resizeHandle:SetScript("OnEnter", function() UpdateResizeHandleVisibility(); end);
+resizeHandle:SetScript("OnLeave", function() UpdateResizeHandleVisibility(); end);
 
 --------------------------------------------------------------------------------
 -- Cooldown Display Frame (split mode)
@@ -1298,8 +1312,8 @@ CooldownFrame:Hide();
 
 -- Title for cooldown frame
 CooldownFrame.title = CooldownFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall");
-CooldownFrame.title:SetPoint("TOP", 0, -7);
-CooldownFrame.title:SetJustifyH("CENTER");
+CooldownFrame.title:SetPoint("TOPLEFT", 10, -8);
+CooldownFrame.title:SetJustifyH("LEFT");
 CooldownFrame.title:SetText("Raid Cooldowns");
 
 -- Separator line below header
@@ -1363,11 +1377,25 @@ cdResizeHandle:SetScript("OnMouseUp", function(self)
     self:SetScript("OnUpdate", nil);
 end);
 
--- Disabled — dynamic auto-sizing makes manual resize unnecessary.
--- Kept for potential experimental testing later.
 UpdateCdResizeHandleVisibility = function()
-    cdResizeHandle:Hide();
+    if db and db.locked then
+        if not cdResizeDragging then
+            cdResizeHandle:Hide();
+        end
+        return;
+    end
+    if cdResizeDragging then return; end
+    if CooldownFrame:IsMouseOver() or cdResizeHandle:IsMouseOver() then
+        cdResizeHandle:Show();
+    else
+        cdResizeHandle:Hide();
+    end
 end
+
+CooldownFrame:HookScript("OnEnter", function() UpdateCdResizeHandleVisibility(); end);
+CooldownFrame:HookScript("OnLeave", function() UpdateCdResizeHandleVisibility(); end);
+cdResizeHandle:SetScript("OnEnter", function() UpdateCdResizeHandleVisibility(); end);
+cdResizeHandle:SetScript("OnLeave", function() UpdateCdResizeHandleVisibility(); end);
 
 --------------------------------------------------------------------------------
 -- Row Frame Pool
@@ -1498,6 +1526,7 @@ local LEFT_MARGIN = 10;
 local RIGHT_MARGIN = 10;
 local TOP_PADDING = 8;
 local BOTTOM_PADDING = 8;
+
 
 -- Pre-compute healer row data into rowDataCache and return measured column widths
 local function PrepareHealerRowData(sortedHealers)
@@ -1849,6 +1878,12 @@ local function RefreshHealerDisplay(sortedHealers)
         HealerManaFrame.separator:Hide();
     end
 
+    -- Track content-driven minimums (used by resize handle to prevent clipping)
+    contentMinWidth = totalWidth;
+
+    -- Respect user-set width as minimum
+    totalWidth = max(totalWidth, db.frameWidth or 120);
+
     yOffset = RenderHealerRows(HealerManaFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth);
 
     -- Hide merged-mode cd elements
@@ -1856,10 +1891,11 @@ local function RefreshHealerDisplay(sortedHealers)
     HealerManaFrame.cdSeparator:Hide();
 
     local totalHeight = -yOffset + BOTTOM_PADDING;
-    contentMinWidth = totalWidth;
     contentMinHeight = totalHeight;
 
-    -- Resize disabled: auto-size to content only
+    -- Respect user-set height as minimum
+    totalHeight = max(totalHeight, db.frameHeight or HEIGHT_MIN);
+
     HealerManaFrame:SetHeight(totalHeight);
     HealerManaFrame:SetWidth(totalWidth);
     HealerManaFrame:Show();
@@ -1906,11 +1942,18 @@ local function RefreshCooldownDisplay()
 
     yOffset, totalWidth = RenderCooldownRows(CooldownFrame, yOffset, totalWidth);
 
-    local totalHeight = -yOffset + BOTTOM_PADDING;
+    -- Track content-driven minimums (used by resize handle to prevent clipping)
     cdContentMinWidth = totalWidth;
+
+    -- Respect user-set width as minimum
+    totalWidth = max(totalWidth, db.cdFrameWidth or 120);
+
+    local totalHeight = -yOffset + BOTTOM_PADDING;
     cdContentMinHeight = totalHeight;
 
-    -- Resize disabled: auto-size to content only
+    -- Respect user-set height as minimum
+    totalHeight = max(totalHeight, db.cdFrameHeight or HEIGHT_MIN);
+
     CooldownFrame:SetHeight(totalHeight);
     CooldownFrame:SetWidth(totalWidth);
     CooldownFrame:Show();
@@ -1979,7 +2022,7 @@ local function RefreshMergedDisplay(sortedHealers)
             HealerManaFrame.cdTitle:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
             HealerManaFrame.cdTitle:SetTextColor(1, 0.82, 0);
             HealerManaFrame.cdTitle:ClearAllPoints();
-            HealerManaFrame.cdTitle:SetPoint("TOP", HealerManaFrame, "TOP", 0, yOffset);
+            HealerManaFrame.cdTitle:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
             HealerManaFrame.cdTitle:Show();
 
             local cdTitleWidth = MeasureText("Raid Cooldowns", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
@@ -1997,11 +2040,18 @@ local function RefreshMergedDisplay(sortedHealers)
         end
     end
 
-    local totalHeight = -yOffset + BOTTOM_PADDING;
+    -- Track content-driven minimums (used by resize handle to prevent clipping)
     contentMinWidth = totalWidth;
+
+    -- Respect user-set width as minimum
+    totalWidth = max(totalWidth, db.frameWidth or 120);
+
+    local totalHeight = -yOffset + BOTTOM_PADDING;
     contentMinHeight = totalHeight;
 
-    -- Resize disabled: auto-size to content only
+    -- Respect user-set height as minimum
+    totalHeight = max(totalHeight, db.frameHeight or HEIGHT_MIN);
+
     HealerManaFrame:SetHeight(totalHeight);
     HealerManaFrame:SetWidth(totalWidth);
     HealerManaFrame:Show();
