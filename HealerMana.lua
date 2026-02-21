@@ -45,6 +45,7 @@ local DEFAULT_SETTINGS = {
     iconSize = 16,
     showRowHighlight = true,
     enableCdRequest = true,
+    headerBackground = true,
 };
 
 --------------------------------------------------------------------------------
@@ -1195,6 +1196,11 @@ HealerManaFrame:SetMovable(true);
 HealerManaFrame:EnableMouse(true);
 HealerManaFrame:Hide();
 
+-- Header background highlight
+HealerManaFrame.titleBg = HealerManaFrame:CreateTexture(nil, "BORDER");
+HealerManaFrame.titleBg:SetColorTexture(0.2, 0.2, 0.2, 0.5);
+HealerManaFrame.titleBg:Hide();
+
 -- Title / average mana text
 HealerManaFrame.title = HealerManaFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall");
 HealerManaFrame.title:SetPoint("TOPLEFT", 10, -8);
@@ -1207,6 +1213,10 @@ HealerManaFrame.separator:SetColorTexture(0.5, 0.5, 0.5, 0.4);
 HealerManaFrame.separator:Hide();
 
 -- Cooldown section title (merged mode)
+HealerManaFrame.cdTitleBg = HealerManaFrame:CreateTexture(nil, "BORDER");
+HealerManaFrame.cdTitleBg:SetColorTexture(0.2, 0.2, 0.2, 0.5);
+HealerManaFrame.cdTitleBg:Hide();
+
 HealerManaFrame.cdTitle = HealerManaFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
 HealerManaFrame.cdTitle:SetJustifyH("LEFT");
 HealerManaFrame.cdTitle:SetText("Cooldowns");
@@ -1318,6 +1328,11 @@ CooldownFrame:SetClampedToScreen(true);
 CooldownFrame:SetMovable(true);
 CooldownFrame:EnableMouse(true);
 CooldownFrame:Hide();
+
+-- Header background highlight
+CooldownFrame.titleBg = CooldownFrame:CreateTexture(nil, "BORDER");
+CooldownFrame.titleBg:SetColorTexture(0.2, 0.2, 0.2, 0.5);
+CooldownFrame.titleBg:Hide();
 
 -- Title for cooldown frame
 CooldownFrame.title = CooldownFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall");
@@ -2417,14 +2432,25 @@ local function RefreshHealerDisplay(sortedHealers)
         if titleWidth > totalWidth then totalWidth = titleWidth; end
 
         yOffset = yOffset - rowHeight;
-        HealerManaFrame.separator:ClearAllPoints();
-        HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
-        HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
-        HealerManaFrame.separator:Show();
+        if db.headerBackground then
+            HealerManaFrame.separator:Hide();
+            HealerManaFrame.titleBg:ClearAllPoints();
+            HealerManaFrame.titleBg:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", 0, 0);
+            HealerManaFrame.titleBg:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", 0, 0);
+            HealerManaFrame.titleBg:SetHeight(TOP_PADDING + rowHeight);
+            HealerManaFrame.titleBg:Show();
+        else
+            HealerManaFrame.titleBg:Hide();
+            HealerManaFrame.separator:ClearAllPoints();
+            HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+            HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+            HealerManaFrame.separator:Show();
+        end
         yOffset = yOffset - 4;
     else
         HealerManaFrame.title:Hide();
         HealerManaFrame.separator:Hide();
+        HealerManaFrame.titleBg:Hide();
     end
 
     -- Track content-driven minimums (used by resize handle to prevent clipping)
@@ -2438,6 +2464,7 @@ local function RefreshHealerDisplay(sortedHealers)
     -- Hide merged-mode cd elements
     HealerManaFrame.cdTitle:Hide();
     HealerManaFrame.cdSeparator:Hide();
+    HealerManaFrame.cdTitleBg:Hide();
 
     local totalHeight = -yOffset + BOTTOM_PADDING;
     contentMinHeight = totalHeight;
@@ -2483,10 +2510,20 @@ local function RefreshCooldownDisplay()
     if titleWidth > totalWidth then totalWidth = titleWidth; end
 
     yOffset = yOffset - rowHeight;
-    CooldownFrame.separator:ClearAllPoints();
-    CooldownFrame.separator:SetPoint("TOPLEFT", CooldownFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
-    CooldownFrame.separator:SetPoint("TOPRIGHT", CooldownFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
-    CooldownFrame.separator:Show();
+    if db.headerBackground then
+        CooldownFrame.separator:Hide();
+        CooldownFrame.titleBg:ClearAllPoints();
+        CooldownFrame.titleBg:SetPoint("TOPLEFT", CooldownFrame, "TOPLEFT", 0, 0);
+        CooldownFrame.titleBg:SetPoint("TOPRIGHT", CooldownFrame, "TOPRIGHT", 0, 0);
+        CooldownFrame.titleBg:SetHeight(TOP_PADDING + rowHeight);
+        CooldownFrame.titleBg:Show();
+    else
+        CooldownFrame.titleBg:Hide();
+        CooldownFrame.separator:ClearAllPoints();
+        CooldownFrame.separator:SetPoint("TOPLEFT", CooldownFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+        CooldownFrame.separator:SetPoint("TOPRIGHT", CooldownFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+        CooldownFrame.separator:Show();
+    end
     yOffset = yOffset - 4;
 
     yOffset, totalWidth = RenderCooldownRows(CooldownFrame, yOffset, totalWidth);
@@ -2540,14 +2577,25 @@ local function RefreshMergedDisplay(sortedHealers)
         if titleWidth > totalWidth then totalWidth = titleWidth; end
 
         yOffset = yOffset - rowHeight;
-        HealerManaFrame.separator:ClearAllPoints();
-        HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
-        HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
-        HealerManaFrame.separator:Show();
+        if db.headerBackground then
+            HealerManaFrame.separator:Hide();
+            HealerManaFrame.titleBg:ClearAllPoints();
+            HealerManaFrame.titleBg:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", 0, 0);
+            HealerManaFrame.titleBg:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", 0, 0);
+            HealerManaFrame.titleBg:SetHeight(TOP_PADDING + rowHeight);
+            HealerManaFrame.titleBg:Show();
+        else
+            HealerManaFrame.titleBg:Hide();
+            HealerManaFrame.separator:ClearAllPoints();
+            HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+            HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+            HealerManaFrame.separator:Show();
+        end
         yOffset = yOffset - 4;
     else
         HealerManaFrame.title:Hide();
         HealerManaFrame.separator:Hide();
+        HealerManaFrame.titleBg:Hide();
     end
 
     yOffset = RenderHealerRows(HealerManaFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth);
@@ -2556,6 +2604,7 @@ local function RefreshMergedDisplay(sortedHealers)
     HideAllCdRows();
     HealerManaFrame.cdTitle:Hide();
     HealerManaFrame.cdSeparator:Hide();
+    HealerManaFrame.cdTitleBg:Hide();
 
     if db.showRaidCooldowns then
         -- Check if there are cooldowns
@@ -2567,6 +2616,7 @@ local function RefreshMergedDisplay(sortedHealers)
 
         if hasCooldowns then
             -- "Cooldowns" title (centered, like Avg Mana)
+            local cdSectionTop = yOffset;
             yOffset = yOffset - TOP_PADDING;
             HealerManaFrame.cdTitle:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
             HealerManaFrame.cdTitle:SetTextColor(1, 0.82, 0);
@@ -2579,10 +2629,20 @@ local function RefreshMergedDisplay(sortedHealers)
 
             yOffset = yOffset - rowHeight;
 
-            HealerManaFrame.cdSeparator:ClearAllPoints();
-            HealerManaFrame.cdSeparator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
-            HealerManaFrame.cdSeparator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
-            HealerManaFrame.cdSeparator:Show();
+            if db.headerBackground then
+                HealerManaFrame.cdSeparator:Hide();
+                HealerManaFrame.cdTitleBg:ClearAllPoints();
+                HealerManaFrame.cdTitleBg:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", 0, cdSectionTop);
+                HealerManaFrame.cdTitleBg:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", 0, cdSectionTop);
+                HealerManaFrame.cdTitleBg:SetHeight(TOP_PADDING + rowHeight);
+                HealerManaFrame.cdTitleBg:Show();
+            else
+                HealerManaFrame.cdTitleBg:Hide();
+                HealerManaFrame.cdSeparator:ClearAllPoints();
+                HealerManaFrame.cdSeparator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+                HealerManaFrame.cdSeparator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+                HealerManaFrame.cdSeparator:Show();
+            end
             yOffset = yOffset - 4;
 
             yOffset, totalWidth = RenderCooldownRows(HealerManaFrame, yOffset, totalWidth);
@@ -3071,6 +3131,9 @@ local function RegisterSettings()
     -- Section: Appearance
     -------------------------
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Appearance"));
+
+    AddCheckbox("headerBackground", "Header Background",
+        "Show a shaded background behind header rows instead of a separator line.");
 
     AddSlider("fontSize", "Font Size",
         "Text size for healer names and mana percentages.",
