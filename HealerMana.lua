@@ -40,6 +40,9 @@ local DEFAULT_SETTINGS = {
     cdFrameY = nil,
     cdFrameWidth = nil,
     cdFrameHeight = nil,
+    statusIcons = false,
+    cooldownIcons = false,
+    iconSize = 16,
 };
 
 --------------------------------------------------------------------------------
@@ -168,6 +171,16 @@ local SOULSTONE_BUFF_IDS = {
     [27239] = true,    -- Soulstone Resurrection (TBC)
 };
 local SOULSTONE_SPELL_NAME = GetSpellInfo(20707) or "Soulstone Resurrection";
+
+-- Status icon textures for icon mode (keyed by status identifier)
+local STATUS_ICONS = {
+    drinking     = select(3, GetSpellInfo(430)),      -- Drink
+    innervate    = select(3, GetSpellInfo(29166)),     -- Innervate
+    manaTide     = select(3, GetSpellInfo(16191)),     -- Mana Tide Totem
+    soulstone    = select(3, GetSpellInfo(20707)),     -- Soulstone Resurrection
+    symbolOfHope = select(3, GetSpellInfo(32548)),     -- Symbol of Hope
+    potion       = select(3, GetSpellInfo(17531)),     -- Super Mana Potion
+};
 
 -- Raid-wide cooldown spells tracked at the bottom of the display
 -- Multi-rank spells share a single info table referenced by all rank IDs
@@ -314,6 +327,7 @@ local sortedCache = {};
 local rowDataCache = {};
 local statusLabelParts = {};
 local statusDurParts = {};
+local statusIconParts = {};
 
 -- Raid cooldown tracking
 local raidCooldowns = {};
@@ -415,34 +429,45 @@ local function FormatDuration(expirationTime, now)
     return format("%ds", floor(remaining));
 end
 
--- Returns two strings: statusLabel (colored label), statusDuration (duration + overflow)
--- The label and duration are rendered in separate FontStrings for pixel-perfect alignment.
+-- Returns: statusLabel, statusDuration, statusIconData
+-- statusLabel/statusDuration: colored text strings for text mode
+-- statusIconData: array of {icon, duration} entries for icon mode
 local function FormatStatusText(data)
     wipe(statusLabelParts);
     wipe(statusDurParts);
+    wipe(statusIconParts);
     local now = GetTime();
 
     -- Soulstone shown on dead healers (manaPercent == -2)
     if db.showSoulstone and data.hasSoulstone and data.manaPercent == -2 then
         tinsert(statusLabelParts, format("|cff9482c9%s|r", "Soulstone"));
         tinsert(statusDurParts, "");
+        tinsert(statusIconParts, { icon = STATUS_ICONS.soulstone, duration = "" });
     end
 
     if data.isDrinking and db.showDrinking then
         tinsert(statusLabelParts, format("|cff55ccff%s|r", "Drinking"));
-        tinsert(statusDurParts, FormatDuration(data.drinkExpiry, now));
+        local dur = FormatDuration(data.drinkExpiry, now);
+        tinsert(statusDurParts, dur);
+        tinsert(statusIconParts, { icon = STATUS_ICONS.drinking, duration = dur });
     end
     if data.hasInnervate and db.showInnervate then
         tinsert(statusLabelParts, format("|cffba55d3%s|r", "Innervate"));
-        tinsert(statusDurParts, FormatDuration(data.innervateExpiry, now));
+        local dur = FormatDuration(data.innervateExpiry, now);
+        tinsert(statusDurParts, dur);
+        tinsert(statusIconParts, { icon = STATUS_ICONS.innervate, duration = dur });
     end
     if data.hasManaTide and db.showManaTide then
         tinsert(statusLabelParts, format("|cff00c8ff%s|r", "Mana Tide"));
-        tinsert(statusDurParts, FormatDuration(data.manaTideExpiry, now));
+        local dur = FormatDuration(data.manaTideExpiry, now);
+        tinsert(statusDurParts, dur);
+        tinsert(statusIconParts, { icon = STATUS_ICONS.manaTide, duration = dur });
     end
     if data.hasSymbolOfHope and db.showSymbolOfHope then
         tinsert(statusLabelParts, format("|cffffff80%s|r", "Symbol of Hope"));
-        tinsert(statusDurParts, FormatDuration(data.symbolOfHopeExpiry, now));
+        local dur = FormatDuration(data.symbolOfHopeExpiry, now);
+        tinsert(statusDurParts, dur);
+        tinsert(statusIconParts, { icon = STATUS_ICONS.symbolOfHope, duration = dur });
     end
     if db.showPotionCooldown and data.potionExpiry and data.potionExpiry > now
             and not (data.isDrinking and db.showDrinking)
@@ -453,10 +478,12 @@ local function FormatStatusText(data)
         local minutes = floor(remaining / 60);
         local seconds = remaining % 60;
         tinsert(statusLabelParts, format("|cffffaa00%s|r", "Potion"));
-        tinsert(statusDurParts, format("%d:%02d", minutes, seconds));
+        local dur = format("%d:%02d", minutes, seconds);
+        tinsert(statusDurParts, dur);
+        tinsert(statusIconParts, { icon = STATUS_ICONS.potion, duration = dur });
     end
 
-    if #statusLabelParts == 0 then return "", ""; end
+    if #statusLabelParts == 0 then return "", "", statusIconParts; end
 
     -- Primary status: label in first FontString, duration in second
     local labelStr = statusLabelParts[1];
@@ -475,7 +502,7 @@ local function FormatStatusText(data)
         end
     end
 
-    return labelStr, durStr;
+    return labelStr, durStr, statusIconParts;
 end
 
 --------------------------------------------------------------------------------
@@ -1363,6 +1390,18 @@ local function CreateRowFrame()
     frame.durationText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
     frame.durationText:SetJustifyH("LEFT");
 
+    -- Icon mode: up to 4 status icon slots (texture + small duration text)
+    frame.statusIcons = {};
+    for i = 1, 4 do
+        local tex = frame:CreateTexture(nil, "OVERLAY");
+        tex:SetSize(14, 14);
+        tex:Hide();
+        local dur = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
+        dur:SetJustifyH("LEFT");
+        dur:Hide();
+        frame.statusIcons[i] = { icon = tex, dur = dur };
+    end
+
     return frame;
 end
 
@@ -1375,6 +1414,10 @@ end
 local function ReleaseRow(frame)
     frame:Hide();
     frame:ClearAllPoints();
+    for i = 1, 4 do
+        frame.statusIcons[i].icon:Hide();
+        frame.statusIcons[i].dur:Hide();
+    end
     tinsert(rowPool, frame);
 end
 
@@ -1407,6 +1450,11 @@ local function CreateCdRowFrame()
     frame.timerText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
     frame.timerText:SetJustifyH("LEFT");
 
+    -- Icon mode: spell icon texture
+    frame.spellIcon = frame:CreateTexture(nil, "OVERLAY");
+    frame.spellIcon:SetSize(14, 14);
+    frame.spellIcon:Hide();
+
     return frame;
 end
 
@@ -1423,6 +1471,7 @@ end
 local function ReleaseCdRow(frame)
     frame:Hide();
     frame:ClearAllPoints();
+    frame.spellIcon:Hide();
     tinsert(cdRowPool, frame);
 end
 
@@ -1453,6 +1502,9 @@ local function PrepareHealerRowData(sortedHealers)
     local maxStatusDurWidth = 0;
     local hasBuff = false;
     local hasPotion = false;
+    local useIcons = db.statusIcons;
+    local maxIconCount = 0;
+    local hasIconDuration = false;
 
     for _, data in ipairs(sortedHealers) do
         local manaStr;
@@ -1464,40 +1516,77 @@ local function PrepareHealerRowData(sortedHealers)
             manaStr = format("%d%%", data.manaPercent);
         end
 
-        local statusLabel, statusDur = FormatStatusText(data);
-        local labelPlain = statusLabel:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
-        local durPlain = statusDur:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
+        local statusLabel, statusDur, iconData = FormatStatusText(data);
 
         local nw = MeasureText(data.name, db.fontSize);
-        local slw = 0;
-        if labelPlain ~= "" then
-            slw = MeasureText(labelPlain, db.fontSize - 1);
-        end
-        -- Track which duration formats are present (for stable reference widths)
-        if durPlain ~= "" then
-            if durPlain:find(":") then
-                hasPotion = true;
-            else
-                hasBuff = true;
+        if nw > maxNameWidth then maxNameWidth = nw; end
+
+        -- Deep-copy iconData since statusIconParts is reused per call
+        local iconDataCopy;
+        if iconData and #iconData > 0 then
+            iconDataCopy = {};
+            for i, entry in ipairs(iconData) do
+                iconDataCopy[i] = { icon = entry.icon, duration = entry.duration };
             end
         end
 
-        if nw > maxNameWidth then maxNameWidth = nw; end
-        if slw > maxStatusLabelWidth then maxStatusLabelWidth = slw; end
+        if useIcons then
+            if iconDataCopy then
+                local count = #iconDataCopy;
+                if count > maxIconCount then maxIconCount = count; end
+                for _, entry in ipairs(iconDataCopy) do
+                    if entry.duration ~= "" then
+                        hasIconDuration = true;
+                    end
+                end
+            end
+        else
+            local labelPlain = statusLabel:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
+            local durPlain = statusDur:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
+
+            local slw = 0;
+            if labelPlain ~= "" then
+                slw = MeasureText(labelPlain, db.fontSize - 1);
+            end
+            if durPlain ~= "" then
+                if durPlain:find(":") then
+                    hasPotion = true;
+                else
+                    hasBuff = true;
+                end
+            end
+            if slw > maxStatusLabelWidth then maxStatusLabelWidth = slw; end
+        end
 
         tinsert(rowDataCache, {
             data = data,
             manaStr = manaStr,
             statusLabel = statusLabel,
             statusDur = statusDur,
+            statusIconData = iconDataCopy,
         });
     end
-    -- Use stable reference widths per format to prevent jitter as digits change
-    local durFontSize = db.fontSize - 1;
-    if hasPotion then
-        maxStatusDurWidth = MeasureText("0:00", durFontSize);
-    elseif hasBuff then
-        maxStatusDurWidth = MeasureText("00s", durFontSize);
+
+    if useIcons then
+        -- Icon-based width: each icon + optional duration text
+        if maxIconCount > 0 then
+            local iconSize = db.iconSize;
+            local iconGap = 3;
+            maxStatusLabelWidth = maxIconCount * (iconSize + iconGap) - iconGap;
+            if hasIconDuration then
+                local durRefWidth = MeasureText("00s", db.fontSize - 2);
+                maxStatusLabelWidth = maxStatusLabelWidth + maxIconCount * (iconGap + durRefWidth);
+            end
+        end
+        maxStatusDurWidth = 0;
+    else
+        -- Use stable reference widths per format to prevent jitter as digits change
+        local durFontSize = db.fontSize - 1;
+        if hasPotion then
+            maxStatusDurWidth = MeasureText("0:00", durFontSize);
+        elseif hasBuff then
+            maxStatusDurWidth = MeasureText("00s", durFontSize);
+        end
     end
 
     local pad = max(4, floor(db.fontSize * 0.35 + 0.5));
@@ -1515,7 +1604,11 @@ end
 
 -- Render healer rows onto a target frame starting at yOffset; returns updated yOffset and totalWidth
 local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth)
-    local rowHeight = max(db.fontSize + 4, 16);
+    local useIcons = db.statusIcons;
+    local rowHeight = max(db.fontSize + 4, useIcons and (db.iconSize + 2) or 0, 16);
+    local iconSize = db.iconSize;
+    local iconGap = 3;
+
     for _, rd in ipairs(rowDataCache) do
         local data = rd.data;
         local row = AcquireRow();
@@ -1523,19 +1616,12 @@ local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, 
         row:SetSize(totalWidth, rowHeight);
         row.nameText:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
         row.manaText:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
-        row.statusText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
-        row.durationText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
 
         row.nameText:SetWidth(maxNameWidth);
         row.manaText:SetWidth(maxManaWidth);
-        row.statusText:SetWidth(maxStatusLabelWidth);
 
         row.manaText:ClearAllPoints();
         row.manaText:SetPoint("LEFT", row.nameText, "RIGHT", COL_GAP, 0);
-        row.statusText:ClearAllPoints();
-        row.statusText:SetPoint("LEFT", row.manaText, "RIGHT", COL_GAP, 0);
-        row.durationText:ClearAllPoints();
-        row.durationText:SetPoint("LEFT", row.statusText, "RIGHT", COL_GAP, 0);
 
         local cr, cg, cb = GetClassColor(data.classFile);
         row.nameText:SetText(data.name);
@@ -1550,8 +1636,61 @@ local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, 
             row.manaText:SetTextColor(mr, mg, mb);
         end
 
-        row.statusText:SetText(rd.statusLabel);
-        row.durationText:SetText(rd.statusDur);
+        if useIcons then
+            -- Icon mode: hide text, show icon textures
+            row.statusText:Hide();
+            row.durationText:Hide();
+
+            local iconData = rd.statusIconData;
+            local prevAnchor = row.manaText;
+            local prevPoint = "RIGHT";
+            for i = 1, 4 do
+                local slot = row.statusIcons[i];
+                if iconData and i <= #iconData and iconData[i].icon then
+                    slot.icon:ClearAllPoints();
+                    slot.icon:SetSize(iconSize, iconSize);
+                    slot.icon:SetTexture(iconData[i].icon);
+                    slot.icon:SetPoint("LEFT", prevAnchor, prevPoint, COL_GAP, 0);
+                    slot.icon:Show();
+
+                    if iconData[i].duration ~= "" then
+                        slot.dur:ClearAllPoints();
+                        slot.dur:SetFont(FONT_PATH, db.fontSize - 2, "OUTLINE");
+                        slot.dur:SetPoint("LEFT", slot.icon, "RIGHT", iconGap, 0);
+                        slot.dur:SetText(iconData[i].duration);
+                        slot.dur:SetTextColor(1, 1, 1);
+                        slot.dur:Show();
+                        prevAnchor = slot.dur;
+                        prevPoint = "RIGHT";
+                    else
+                        slot.dur:Hide();
+                        prevAnchor = slot.icon;
+                        prevPoint = "RIGHT";
+                    end
+                else
+                    slot.icon:Hide();
+                    slot.dur:Hide();
+                end
+            end
+        else
+            -- Text mode: hide icons, show text
+            for i = 1, 4 do
+                row.statusIcons[i].icon:Hide();
+                row.statusIcons[i].dur:Hide();
+            end
+
+            row.statusText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
+            row.durationText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
+            row.statusText:SetWidth(maxStatusLabelWidth);
+            row.statusText:ClearAllPoints();
+            row.statusText:SetPoint("LEFT", row.manaText, "RIGHT", COL_GAP, 0);
+            row.durationText:ClearAllPoints();
+            row.durationText:SetPoint("LEFT", row.statusText, "RIGHT", COL_GAP, 0);
+            row.statusText:SetText(rd.statusLabel);
+            row.durationText:SetText(rd.statusDur);
+            row.statusText:Show();
+            row.durationText:Show();
+        end
 
         row:SetPoint("TOPLEFT", targetFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
         row:Show();
@@ -1572,7 +1711,9 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
     if #sortedCooldownCache == 0 then return yOffset, totalWidth; end
 
     local now = GetTime();
-    local rowHeight = max(db.fontSize + 4, 16);
+    local useIcons = db.cooldownIcons;
+    local cdIconSize = db.iconSize;
+    local rowHeight = max(db.fontSize + 4, useIcons and (cdIconSize + 2) or 0, 16);
     sort(sortedCooldownCache, function(a, b)
         return a.spellName < b.spellName;
     end);
@@ -1580,20 +1721,27 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
     -- Measure column widths
     local cdNameMax = 0;
     local cdSpellMax = 0;
-    local cdFontSize = db.fontSize - 1;
+    local cdFontSize = db.fontSize;
     local cdTimerMax = MeasureText("Ready", cdFontSize);
 
     for _, entry in ipairs(sortedCooldownCache) do
         local nw = MeasureText(entry.name, cdFontSize);
         if nw > cdNameMax then cdNameMax = nw; end
-        local sw = MeasureText(entry.spellName, cdFontSize);
-        if sw > cdSpellMax then cdSpellMax = sw; end
+        if not useIcons then
+            local sw = MeasureText(entry.spellName, cdFontSize);
+            if sw > cdSpellMax then cdSpellMax = sw; end
+        end
     end
 
     local cdPad = max(4, floor(cdFontSize * 0.35 + 0.5));
     cdNameMax = cdNameMax + cdPad;
-    cdSpellMax = cdSpellMax + cdPad;
     cdTimerMax = cdTimerMax + cdPad;
+
+    if useIcons then
+        cdSpellMax = cdIconSize + cdPad;
+    else
+        cdSpellMax = cdSpellMax + cdPad;
+    end
 
     local cdContentWidth = cdNameMax + COL_GAP + cdSpellMax + COL_GAP + cdTimerMax;
     local cdTotalWidth = LEFT_MARGIN + cdContentWidth + RIGHT_MARGIN;
@@ -1608,15 +1756,32 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
         cdRow.nameText:SetText(entry.name);
         cdRow.nameText:SetTextColor(cr, cg, cb);
 
-        cdRow.spellText:ClearAllPoints();
-        cdRow.spellText:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
-        cdRow.spellText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
-        cdRow.spellText:SetWidth(cdSpellMax);
-        cdRow.spellText:SetText(entry.spellName);
-        cdRow.spellText:SetTextColor(cr, cg, cb);
+        if useIcons then
+            -- Icon mode: show spell icon instead of text
+            cdRow.spellText:Hide();
+            cdRow.spellIcon:ClearAllPoints();
+            cdRow.spellIcon:SetSize(cdIconSize, cdIconSize);
+            cdRow.spellIcon:SetTexture(entry.icon);
+            cdRow.spellIcon:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
+            cdRow.spellIcon:Show();
 
-        cdRow.timerText:ClearAllPoints();
-        cdRow.timerText:SetPoint("LEFT", cdRow.spellText, "RIGHT", COL_GAP, 0);
+            cdRow.timerText:ClearAllPoints();
+            cdRow.timerText:SetPoint("LEFT", cdRow.spellIcon, "RIGHT", COL_GAP, 0);
+        else
+            -- Text mode: show spell name text
+            cdRow.spellIcon:Hide();
+            cdRow.spellText:ClearAllPoints();
+            cdRow.spellText:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
+            cdRow.spellText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
+            cdRow.spellText:SetWidth(cdSpellMax);
+            cdRow.spellText:SetText(entry.spellName);
+            cdRow.spellText:SetTextColor(cr, cg, cb);
+            cdRow.spellText:Show();
+
+            cdRow.timerText:ClearAllPoints();
+            cdRow.timerText:SetPoint("LEFT", cdRow.spellText, "RIGHT", COL_GAP, 0);
+        end
+
         cdRow.timerText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
         if entry.expiryTime <= now then
             cdRow.timerText:SetText("Ready");
@@ -1642,7 +1807,7 @@ end
 local function RefreshHealerDisplay(sortedHealers)
     ReleaseAllRows();
 
-    local rowHeight = max(db.fontSize + 4, 16);
+    local rowHeight = max(db.fontSize + 4, db.statusIcons and (db.iconSize + 2) or 0, 16);
     local maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth = PrepareHealerRowData(sortedHealers);
 
     local contentWidth = maxNameWidth + COL_GAP + maxManaWidth;
@@ -1713,7 +1878,7 @@ local function RefreshCooldownDisplay()
         return;
     end
 
-    local rowHeight = max(db.fontSize + 4, 16);
+    local rowHeight = max(db.fontSize + 4, db.cooldownIcons and (db.iconSize + 2) or 0, 16);
     local yOffset = -TOP_PADDING;
     local totalWidth = 120;
 
@@ -1748,7 +1913,9 @@ end
 local function RefreshMergedDisplay(sortedHealers)
     ReleaseAllRows();
 
-    local rowHeight = max(db.fontSize + 4, 16);
+    local iconH = 0;
+    if db.statusIcons or db.cooldownIcons then iconH = db.iconSize + 2; end
+    local rowHeight = max(db.fontSize + 4, iconH, 16);
     local maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth = PrepareHealerRowData(sortedHealers);
 
     local contentWidth = maxNameWidth + COL_GAP + maxManaWidth;
@@ -2243,6 +2410,12 @@ local function RegisterSettings()
     AddCheckbox("showStatusDuration", "Buff Durations",
         "Display remaining duration on status indicators.");
 
+    AddCheckbox("statusIcons", "Status Icons",
+        "Display spell icons instead of text labels for status indicators.");
+
+    AddCheckbox("cooldownIcons", "Cooldown Icons",
+        "Display spell icons instead of spell names for raid cooldowns.");
+
     -------------------------
     -- Section: Appearance
     -------------------------
@@ -2251,6 +2424,10 @@ local function RegisterSettings()
     AddSlider("fontSize", "Font Size",
         "Text size for healer names and mana percentages.",
         8, 24, 1);
+
+    AddSlider("iconSize", "Icon Size",
+        "Size of spell icons for status indicators and raid cooldowns.",
+        10, 32, 1);
 
     AddSlider("scale", "Scale",
         "Overall scale of both frames.",
