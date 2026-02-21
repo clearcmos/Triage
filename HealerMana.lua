@@ -1171,12 +1171,9 @@ HealerManaFrame:SetSize(220, 30);
 HealerManaFrame:SetFrameStrata("MEDIUM");
 HealerManaFrame:SetBackdrop({
     bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 12,
-    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    tile = true, tileSize = 16,
 });
 HealerManaFrame:SetBackdropColor(0, 0, 0, 0.7);
-HealerManaFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9);
 HealerManaFrame:SetClampedToScreen(true);
 HealerManaFrame:SetMovable(true);
 HealerManaFrame:EnableMouse(true);
@@ -1299,12 +1296,9 @@ CooldownFrame:SetSize(220, 30);
 CooldownFrame:SetFrameStrata("MEDIUM");
 CooldownFrame:SetBackdrop({
     bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 12,
-    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    tile = true, tileSize = 16,
 });
 CooldownFrame:SetBackdropColor(0, 0, 0, 0.7);
-CooldownFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9);
 CooldownFrame:SetClampedToScreen(true);
 CooldownFrame:SetMovable(true);
 CooldownFrame:EnableMouse(true);
