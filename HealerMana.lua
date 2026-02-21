@@ -329,9 +329,12 @@ local statusIconParts = {};
 
 -- Raid cooldown tracking
 local raidCooldowns = {};
-local sortedCooldownCache = {};
 local activeCdRows = {};
 local savedRaidCooldowns = nil;
+
+-- Spell-grouped cooldown cache
+local spellGroupCache = {};
+local sortedSpellGroupCache = {};
 
 -- Subgroup tracking: guid -> subgroup number (1-8)
 local memberSubgroups = {};
@@ -369,6 +372,7 @@ local UpdateCdResizeHandleVisibility;
 local HideContextMenu;
 local ShowCooldownRequestMenu;
 local ShowCdRowRequestMenu;
+local ShowTargetSubmenu;
 
 --------------------------------------------------------------------------------
 -- Utility Functions
@@ -413,6 +417,24 @@ local function GetClassColor(classFile)
         return color.r, color.g, color.b;
     end
     return 1, 1, 1;
+end
+
+-- Check if a caster (by GUID) is dead. Checks healers table first, falls back to group scan.
+local function IsCasterDead(guid)
+    if previewActive then
+        local hdata = healers[guid];
+        return hdata and hdata.manaPercent == -2;
+    end
+    local hdata = healers[guid];
+    if hdata and hdata.unit and UnitExists(hdata.unit) then
+        return UnitIsDeadOrGhost(hdata.unit);
+    end
+    for _, u in ipairs(IterateGroupMembers()) do
+        if UnitGUID(u) == guid then
+            return UnitIsDeadOrGhost(u);
+        end
+    end
+    return false;
 end
 
 -- Measure helper: get pixel width of a string at a given font size
@@ -973,6 +995,62 @@ local function GetSortedHealers()
     end
 
     return sortedCache;
+end
+
+-- Group raidCooldowns by spellId, sort casters by availability (alive+ready first)
+-- Returns sorted array of { spellId, spellName, icon, casters = { {guid, name, classFile, expiryTime, isDead}, ... } }
+local function GroupCooldownsBySpell()
+    wipe(spellGroupCache);
+    wipe(sortedSpellGroupCache);
+
+    -- Cache dead status per GUID to avoid repeated group scans
+    local deadCache = {};
+
+    for _, entry in pairs(raidCooldowns) do
+        local sid = entry.spellId;
+        if not spellGroupCache[sid] then
+            spellGroupCache[sid] = {
+                spellId = sid,
+                spellName = entry.spellName,
+                icon = entry.icon,
+                casters = {},
+            };
+        end
+        local guid = entry.sourceGUID;
+        if deadCache[guid] == nil then
+            deadCache[guid] = IsCasterDead(guid);
+        end
+        tinsert(spellGroupCache[sid].casters, {
+            guid = guid,
+            name = entry.name,
+            classFile = entry.classFile,
+            expiryTime = entry.expiryTime,
+            isDead = deadCache[guid],
+        });
+    end
+
+    local now = GetTime();
+
+    for _, group in pairs(spellGroupCache) do
+        -- Sort casters: alive+ready first, then alive+shortest CD, then dead
+        sort(group.casters, function(a, b)
+            if a.isDead ~= b.isDead then return not a.isDead; end
+            local aReady = (not a.isDead and a.expiryTime <= now);
+            local bReady = (not b.isDead and b.expiryTime <= now);
+            if aReady ~= bReady then return aReady; end
+            if not a.isDead and not b.isDead then
+                return a.expiryTime < b.expiryTime;
+            end
+            return a.name < b.name;
+        end);
+        tinsert(sortedSpellGroupCache, group);
+    end
+
+    sort(sortedSpellGroupCache, function(a, b)
+        return a.spellName < b.spellName;
+    end);
+
+    return sortedSpellGroupCache;
 end
 
 --------------------------------------------------------------------------------
@@ -1551,7 +1629,7 @@ local function CreateCdRowFrame()
 end
 
 -- Persistent cd row frames (never recycled — reused in place like healer rows)
-local MAX_CD_ROWS = 25;
+local MAX_CD_ROWS = 15;
 for i = 1, MAX_CD_ROWS do
     activeCdRows[i] = CreateCdRowFrame();
 end
@@ -1566,6 +1644,7 @@ local function HideAllCdRows()
         activeCdRows[i].spellName = nil;
         activeCdRows[i].cdIcon = nil;
         activeCdRows[i].expiryTime = nil;
+        activeCdRows[i].spellGroup = nil;
         activeCdRows[i].spellIcon:Hide();
     end
 end
@@ -1922,66 +2001,13 @@ ShowCooldownRequestMenu = function(rowFrame)
     contextMenuVisible = true;
 end
 
-ShowCdRowRequestMenu = function(cdRow)
-    local spellId = cdRow.spellId;
-    local casterName = cdRow.casterName;
-    local sourceGUID = cdRow.sourceGUID;
-    if not spellId or not casterName then return; end
-
-    -- Toggle off if clicking same row
-    if contextMenuVisible and contextMenuFrame and contextMenuFrame.targetGUID == sourceGUID
-       and contextMenuFrame.targetSpellId == spellId then
-        HideContextMenu();
-        return;
-    end
-
-    -- Only show menu for ready cooldowns (skip in preview mode)
-    local now = GetTime();
-    if not previewActive and cdRow.expiryTime and cdRow.expiryTime > now then return; end
-
+-- Show target selection submenu for a specific caster's targeted spell
+ShowTargetSubmenu = function(casterName, casterGUID, spellId, spellName, spellIcon, anchorX, anchorY)
     local config = CD_REQUEST_CONFIG[spellId];
-    if not config then return; end
+    if not config or config.type ~= "target" then return; end
 
-    -- Build menu entries (preview mode bypasses all conditions)
-    local entries = {};
-
-    if config.type == "cast" or (previewActive and config.type == "conditional_cast") then
-        tinsert(entries, {
-            icon = cdRow.cdIcon,
-            text = cdRow.spellName,
-            whisper = format("[HM] Cast %s please", cdRow.spellName),
-        });
-    elseif config.type == "conditional_cast" then
-        if config.condition == "subgroup_low_mana" then
-            if not HasLowManaHealerInSubgroup(sourceGUID, config.threshold or 20) then
-                HideContextMenu();
-                return;
-            end
-        end
-        tinsert(entries, {
-            icon = cdRow.cdIcon,
-            text = cdRow.spellName,
-            whisper = format("[HM] Cast %s please", cdRow.spellName),
-        });
-    elseif config.type == "target" then
-        local targets = ScanGroupTargets(config.filter, config.threshold or 20, sourceGUID);
-        if #targets == 0 then
-            HideContextMenu();
-            return;
-        end
-        for _, t in ipairs(targets) do
-            local cr, cg, cb = GetClassColor(t.classFile);
-            local coloredName = format("|cff%02x%02x%02x%s|r", cr * 255, cg * 255, cb * 255, t.name);
-            tinsert(entries, {
-                icon = cdRow.cdIcon,
-                text = format("%s - %s (%s)", cdRow.spellName, coloredName, t.info),
-                whisper = format("[HM] Cast %s on %s (%s)", cdRow.spellName, t.name, t.info),
-                targetName = t.name,
-            });
-        end
-    end
-
-    if #entries == 0 then
+    local targets = ScanGroupTargets(config.filter, config.threshold or 20, casterGUID);
+    if #targets == 0 then
         HideContextMenu();
         return;
     end
@@ -1996,15 +2022,18 @@ ShowCdRowRequestMenu = function(cdRow)
     end
 
     local maxWidth = 0;
-    for i, entry in ipairs(entries) do
+    for i, t in ipairs(targets) do
         local item = contextMenuFrame.items[i];
         if not item then
             item = CreateMenuItem(contextMenuFrame);
             contextMenuFrame.items[i] = item;
         end
 
-        item.text:SetText(entry.text);
-        item.icon:SetTexture(entry.icon);
+        local cr, cg, cb = GetClassColor(t.classFile);
+        local coloredName = format("|cff%02x%02x%02x%s|r", cr * 255, cg * 255, cb * 255, t.name);
+        local displayText = format("%s (%s)", coloredName, t.info);
+        item.text:SetText(displayText);
+        item.icon:SetTexture(spellIcon);
 
         item:ClearAllPoints();
         item:SetPoint("TOPLEFT", contextMenuFrame, "TOPLEFT", MENU_PADDING, -(MENU_PADDING + (i - 1) * MENU_ITEM_HEIGHT));
@@ -2012,7 +2041,7 @@ ShowCdRowRequestMenu = function(cdRow)
 
         -- Store data for click handler
         item.casterName = casterName;
-        item.whisperMsg = entry.whisper;
+        item.whisperMsg = format("[HM] Cast %s on %s (%s)", spellName, t.name, t.info);
 
         item:SetScript("OnMouseUp", function(self, button)
             if button ~= "LeftButton" then return; end
@@ -2023,14 +2052,143 @@ ShowCdRowRequestMenu = function(cdRow)
 
         item:Show();
 
-        -- Measure width
         local textWidth = item.text:GetStringWidth();
         local itemWidth = MENU_PADDING + MENU_ICON_SIZE + 4 + textWidth + MENU_PADDING;
         if itemWidth > maxWidth then maxWidth = itemWidth; end
     end
 
     local menuWidth = max(maxWidth + MENU_PADDING * 2, 120);
-    local menuHeight = MENU_PADDING * 2 + #entries * MENU_ITEM_HEIGHT;
+    local menuHeight = MENU_PADDING * 2 + #targets * MENU_ITEM_HEIGHT;
+    contextMenuFrame:SetSize(menuWidth, menuHeight);
+
+    -- Anchor at the provided position
+    local menuScale = contextMenuFrame:GetEffectiveScale();
+    contextMenuFrame:ClearAllPoints();
+    contextMenuFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", anchorX / menuScale, anchorY / menuScale);
+    contextMenuFrame.targetGUID = casterGUID;
+    contextMenuFrame.targetSpellId = spellId;
+    contextMenuFrame:Show();
+    contextMenuFrame:RegisterEvent("GLOBAL_MOUSE_DOWN");
+    contextMenuVisible = true;
+end
+
+-- Level 1 menu: list casters of a spell group with individual state
+ShowCdRowRequestMenu = function(cdRow)
+    local spellId = cdRow.spellId;
+    local group = cdRow.spellGroup;
+    if not spellId or not group then return; end
+
+    -- Toggle off if clicking same spell
+    if contextMenuVisible and contextMenuFrame and contextMenuFrame.targetSpellId == spellId
+       and not contextMenuFrame.targetGUID then
+        HideContextMenu();
+        return;
+    end
+
+    local config = CD_REQUEST_CONFIG[spellId];
+    if not config then return; end
+
+    if not contextMenuFrame then
+        contextMenuFrame = CreateContextMenu();
+    end
+
+    -- Hide existing items
+    for _, item in ipairs(contextMenuFrame.items) do
+        item:Hide();
+    end
+
+    local now = GetTime();
+    local maxWidth = 0;
+
+    for i, c in ipairs(group.casters) do
+        local item = contextMenuFrame.items[i];
+        if not item then
+            item = CreateMenuItem(contextMenuFrame);
+            contextMenuFrame.items[i] = item;
+        end
+
+        -- Build state string
+        local stateStr;
+        if c.isDead then
+            stateStr = "|cff808080Dead|r";
+        elseif c.expiryTime <= now then
+            stateStr = "|cff00ff00Ready|r";
+        else
+            local rem = c.expiryTime - now;
+            stateStr = format("|cffcccccc%d:%02d|r", floor(rem / 60), floor(rem) % 60);
+        end
+
+        local cr, cg, cb = GetClassColor(c.classFile);
+        local coloredName = format("|cff%02x%02x%02x%s|r", cr * 255, cg * 255, cb * 255, c.name);
+        local displayText = format("%s - %s", stateStr, coloredName);
+        item.text:SetText(displayText);
+        item.icon:SetTexture(group.icon);
+
+        item:ClearAllPoints();
+        item:SetPoint("TOPLEFT", contextMenuFrame, "TOPLEFT", MENU_PADDING, -(MENU_PADDING + (i - 1) * MENU_ITEM_HEIGHT));
+        item:SetPoint("RIGHT", contextMenuFrame, "RIGHT", -MENU_PADDING, 0);
+
+        -- Clickable only if alive and ready (or preview mode)
+        local isClickable = previewActive or (not c.isDead and c.expiryTime <= now);
+        item.casterName = c.name;
+
+        if isClickable then
+            item:EnableMouse(true);
+            item:SetScript("OnEnter", function(self) self.highlight:Show(); end);
+            item:SetScript("OnLeave", function(self) self.highlight:Hide(); end);
+
+            if config.type == "target" then
+                -- Level 2: open target submenu
+                item:SetScript("OnMouseUp", function(self, button)
+                    if button ~= "LeftButton" then return; end
+                    local cx, cy = GetCursorPosition();
+                    ShowTargetSubmenu(self.casterName, c.guid, spellId, group.spellName, group.icon, cx + 4, cy + 4);
+                end);
+            elseif config.type == "cast" then
+                item:SetScript("OnMouseUp", function(self, button)
+                    if button ~= "LeftButton" then return; end
+                    local msg = format("[HM] Cast %s please", group.spellName);
+                    local recipient = previewActive and UnitName("player") or self.casterName;
+                    SendChatMessage(msg, "WHISPER", nil, recipient);
+                    HideContextMenu();
+                end);
+            elseif config.type == "conditional_cast" then
+                -- Check condition only in live mode
+                local condMet = previewActive;
+                if not condMet and config.condition == "subgroup_low_mana" then
+                    condMet = HasLowManaHealerInSubgroup(c.guid, config.threshold or 20);
+                end
+                if condMet then
+                    item:SetScript("OnMouseUp", function(self, button)
+                        if button ~= "LeftButton" then return; end
+                        local msg = format("[HM] Cast %s please", group.spellName);
+                        local recipient = previewActive and UnitName("player") or self.casterName;
+                        SendChatMessage(msg, "WHISPER", nil, recipient);
+                        HideContextMenu();
+                    end);
+                else
+                    -- Condition not met — grey out
+                    item:EnableMouse(false);
+                    item:SetScript("OnMouseUp", nil);
+                end
+            end
+        else
+            -- Dead or on CD — non-clickable, greyed highlight
+            item:EnableMouse(false);
+            item:SetScript("OnEnter", nil);
+            item:SetScript("OnLeave", nil);
+            item:SetScript("OnMouseUp", nil);
+        end
+
+        item:Show();
+
+        local textWidth = item.text:GetStringWidth();
+        local itemWidth = MENU_PADDING + MENU_ICON_SIZE + 4 + textWidth + MENU_PADDING;
+        if itemWidth > maxWidth then maxWidth = itemWidth; end
+    end
+
+    local menuWidth = max(maxWidth + MENU_PADDING * 2, 120);
+    local menuHeight = MENU_PADDING * 2 + #group.casters * MENU_ITEM_HEIGHT;
     contextMenuFrame:SetSize(menuWidth, menuHeight);
 
     -- Anchor near the cursor
@@ -2038,7 +2196,7 @@ ShowCdRowRequestMenu = function(cdRow)
     local menuScale = contextMenuFrame:GetEffectiveScale();
     contextMenuFrame:ClearAllPoints();
     contextMenuFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", cursorX / menuScale + 4, cursorY / menuScale + 4);
-    contextMenuFrame.targetGUID = sourceGUID;
+    contextMenuFrame.targetGUID = nil;  -- spell-level, not caster-level
     contextMenuFrame.targetSpellId = spellId;
     contextMenuFrame:Show();
     contextMenuFrame:RegisterEvent("GLOBAL_MOUSE_DOWN");
@@ -2279,39 +2437,29 @@ end
 
 -- Collect sorted cooldown data and render rows onto a target frame; returns updated yOffset and totalWidth
 local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
-    wipe(sortedCooldownCache);
-    for _, entry in pairs(raidCooldowns) do
-        tinsert(sortedCooldownCache, entry);
-    end
+    local spellGroups = GroupCooldownsBySpell();
 
-    if #sortedCooldownCache == 0 then return yOffset, totalWidth; end
+    if #spellGroups == 0 then return yOffset, totalWidth; end
 
     local now = GetTime();
     local useIcons = db.cooldownIcons;
     local cdIconSize = db.iconSize;
     local rowHeight = max(db.fontSize + 4, useIcons and (cdIconSize + 2) or 0, 16);
-    sort(sortedCooldownCache, function(a, b)
-        return a.spellName < b.spellName;
-    end);
 
-    -- Measure column widths
-    local cdNameMax = 0;
+    -- Measure column widths (no player name column — just spell + timer)
     local cdSpellMax = 0;
     local cdFontSize = db.fontSize;
     local cdTimerMax = MeasureText("Ready", cdFontSize);
 
-    for _, entry in ipairs(sortedCooldownCache) do
-        local nw = MeasureText(entry.name, cdFontSize);
-        if nw > cdNameMax then cdNameMax = nw; end
+    for _, group in ipairs(spellGroups) do
         if not useIcons then
-            local sw = MeasureText(entry.spellName, cdFontSize);
+            local sw = MeasureText(group.spellName, cdFontSize);
             if sw > cdSpellMax then cdSpellMax = sw; end
         end
     end
 
     local cdPad = max(4, floor(cdFontSize * 0.35 + 0.5));
     local cdHalfPad = max(2, floor(cdPad * 0.5 + 0.5));
-    cdNameMax = cdNameMax + cdHalfPad;
     cdTimerMax = cdTimerMax + cdHalfPad;
 
     if useIcons then
@@ -2320,84 +2468,90 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
         cdSpellMax = cdSpellMax + cdPad;
     end
 
-    local cdContentWidth = cdNameMax + COL_GAP + cdSpellMax + COL_GAP + cdTimerMax;
+    local cdContentWidth = cdSpellMax + COL_GAP + cdTimerMax;
     local cdTotalWidth = LEFT_MARGIN + cdContentWidth + RIGHT_MARGIN;
     if cdTotalWidth > totalWidth then totalWidth = cdTotalWidth; end
 
-    for rowIdx, entry in ipairs(sortedCooldownCache) do
+    for rowIdx, group in ipairs(spellGroups) do
         local cdRow = activeCdRows[rowIdx];
         if not cdRow then break; end  -- safety: cap at MAX_CD_ROWS
 
         cdRow:SetParent(targetFrame);
 
-        -- Store cooldown data for click-to-request
-        cdRow.sourceGUID = entry.sourceGUID;
-        cdRow.spellId = entry.spellId;
-        cdRow.casterName = entry.name;
-        cdRow.classFile = entry.classFile;
-        cdRow.spellName = entry.spellName;
-        cdRow.cdIcon = entry.icon;
-        cdRow.expiryTime = entry.expiryTime;
+        -- Store spell group for click handler
+        cdRow.spellGroup = group;
+        cdRow.spellId = group.spellId;
+        cdRow.spellName = group.spellName;
+        cdRow.cdIcon = group.icon;
 
+        -- Best caster: first in sorted group (alive+ready first)
+        local best = group.casters[1];
+        cdRow.sourceGUID = best and best.guid or nil;
+        cdRow.casterName = best and best.name or nil;
+        cdRow.classFile = best and best.classFile or nil;
+        cdRow.expiryTime = best and best.expiryTime or 0;
+
+        -- nameText repurposed as spell name (left-aligned first column)
         cdRow.nameText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
-        cdRow.nameText:SetWidth(cdNameMax);
-        local cr, cg, cb = GetClassColor(entry.classFile);
-        cdRow.nameText:SetText(entry.name);
-        cdRow.nameText:SetTextColor(cr, cg, cb);
 
         if useIcons then
-            -- Icon mode: show spell icon instead of text
+            -- Icon mode: show spell icon, hide spell text
+            cdRow.nameText:Hide();
             cdRow.spellText:Hide();
             cdRow.spellIcon:ClearAllPoints();
             cdRow.spellIcon:SetSize(cdIconSize, cdIconSize);
-            cdRow.spellIcon:SetTexture(entry.icon);
-            cdRow.spellIcon:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
+            cdRow.spellIcon:SetTexture(group.icon);
+            cdRow.spellIcon:SetPoint("LEFT", 0, 0);
             cdRow.spellIcon:Show();
 
             cdRow.timerText:ClearAllPoints();
             cdRow.timerText:SetPoint("LEFT", cdRow.spellIcon, "RIGHT", COL_GAP, 0);
         else
-            -- Text mode: show spell name text
+            -- Text mode: show spell name in nameText, hide icon
             cdRow.spellIcon:Hide();
-            cdRow.spellText:ClearAllPoints();
-            cdRow.spellText:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
-            cdRow.spellText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
-            cdRow.spellText:SetWidth(cdSpellMax);
-            cdRow.spellText:SetText(entry.spellName);
-            cdRow.spellText:SetTextColor(cr, cg, cb);
-            cdRow.spellText:Show();
+            cdRow.spellText:Hide();
+            cdRow.nameText:SetWidth(cdSpellMax);
+            cdRow.nameText:SetText(group.spellName);
+            cdRow.nameText:SetTextColor(1, 1, 1);
+            cdRow.nameText:Show();
 
             cdRow.timerText:ClearAllPoints();
-            cdRow.timerText:SetPoint("LEFT", cdRow.spellText, "RIGHT", COL_GAP, 0);
+            cdRow.timerText:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
         end
 
         cdRow.timerText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
 
-        -- Check if caster is dead
-        local casterDead = false;
-        local hdata = healers[entry.sourceGUID];
-        if hdata and hdata.unit and UnitExists(hdata.unit) then
-            casterDead = UnitIsDeadOrGhost(hdata.unit);
-        else
-            -- Non-healer (e.g., tank): scan group for unit
-            for _, u in ipairs(IterateGroupMembers()) do
-                if UnitGUID(u) == entry.sourceGUID then
-                    casterDead = UnitIsDeadOrGhost(u);
-                    break;
+        -- Determine best state: "Ready" if any alive caster is ready,
+        -- shortest remaining CD if all alive are on CD, "DEAD" if all dead
+        local allDead = true;
+        local anyReady = false;
+        local shortestRemaining = nil;
+
+        for _, c in ipairs(group.casters) do
+            if not c.isDead then
+                allDead = false;
+                if c.expiryTime <= now then
+                    anyReady = true;
+                else
+                    local rem = c.expiryTime - now;
+                    if not shortestRemaining or rem < shortestRemaining then
+                        shortestRemaining = rem;
+                    end
                 end
             end
         end
 
-        if casterDead then
+        if allDead then
             cdRow.timerText:SetText("DEAD");
             cdRow.timerText:SetTextColor(0.5, 0.5, 0.5);
-            cdRow.nameText:SetTextColor(0.5, 0.5, 0.5);
-        elseif entry.expiryTime <= now then
+            if not useIcons then
+                cdRow.nameText:SetTextColor(0.5, 0.5, 0.5);
+            end
+        elseif anyReady then
             cdRow.timerText:SetText("Ready");
             cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
         else
-            local remaining = entry.expiryTime - now;
-            cdRow.timerText:SetText(format("%d:%02d", floor(remaining / 60), floor(remaining) % 60));
+            cdRow.timerText:SetText(format("%d:%02d", floor(shortestRemaining / 60), floor(shortestRemaining) % 60));
             cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
         end
 
@@ -2410,10 +2564,11 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
     end
 
     -- Hide excess rows
-    for i = #sortedCooldownCache + 1, #activeCdRows do
+    for i = #spellGroups + 1, #activeCdRows do
         activeCdRows[i]:Hide();
         activeCdRows[i].sourceGUID = nil;
         activeCdRows[i].spellId = nil;
+        activeCdRows[i].spellGroup = nil;
     end
 
     return yOffset, totalWidth;
@@ -2861,6 +3016,8 @@ StartPreview = function()
     memberSubgroups["preview-guid-4"] = 2;  -- Tidecaller
     memberSubgroups["preview-guid-5"] = 2;  -- Soulstoned
     memberSubgroups["preview-guid-ss"] = 1; -- Shadowlock (warlock)
+    memberSubgroups["preview-guid-ss2"] = 2; -- Demonlock (warlock)
+    memberSubgroups["preview-guid-druid2"] = 1; -- Barkskin (druid)
     memberSubgroups["preview-guid-sw"] = 2; -- Tankyboy (warrior)
 
     -- Save and inject mock raid cooldowns
@@ -2960,6 +3117,34 @@ StartPreview = function()
         icon = swInfo.icon,
         spellName = swInfo.name,
         expiryTime = now + 1500,
+    };
+    -- Duplicate casters to demonstrate spell grouping
+    raidCooldowns["preview-inn2"] = {
+        sourceGUID = "preview-guid-druid2",
+        name = "Barkskin",
+        classFile = "DRUID",
+        spellId = INNERVATE_SPELL_ID,
+        icon = innervateInfo.icon,
+        spellName = innervateInfo.name,
+        expiryTime = now + 180,  -- on CD
+    };
+    raidCooldowns["preview-rebirth2"] = {
+        sourceGUID = "preview-guid-druid2",
+        name = "Barkskin",
+        classFile = "DRUID",
+        spellId = 20484,
+        icon = rebirthInfo.icon,
+        spellName = rebirthInfo.name,
+        expiryTime = now + 900,  -- on CD
+    };
+    raidCooldowns["preview-ss2"] = {
+        sourceGUID = "preview-guid-ss2",
+        name = "Demonlock",
+        classFile = "WARLOCK",
+        spellId = 20707,
+        icon = soulstoneInfo.icon,
+        spellName = soulstoneInfo.name,
+        expiryTime = now + 1200,  -- on CD
     };
 
     -- Unlock frames for dragging while options are open
