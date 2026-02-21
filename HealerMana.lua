@@ -23,9 +23,7 @@ local DEFAULT_SETTINGS = {
     showPotionCooldown = true,
     showAverageMana = true,
     showStatusDuration = false,
-    showSolo = false,
     sendWarnings = false,
-    sendWarningsSolo = false,
     warningThreshold = 10,
     warningCooldown = 30,
     colorThresholdGreen = 75,
@@ -179,8 +177,8 @@ local STATUS_ICONS = {
     innervate    = select(3, GetSpellInfo(29166)),     -- Innervate
     manaTide     = select(3, GetSpellInfo(16191)),     -- Mana Tide Totem
     soulstone    = select(3, GetSpellInfo(20707)),     -- Soulstone Resurrection
-    symbolOfHope = select(3, GetSpellInfo(32548)),     -- Symbol of Hope
-    potion       = select(3, GetSpellInfo(17531)),     -- Super Mana Potion
+    symbolOfHope = select(3, GetSpellInfo(32548)) or 135982,  -- Symbol of Hope
+    potion       = 134762,                              -- Generic potion (inv_potion_137)
 };
 
 -- Raid-wide cooldown spells tracked at the bottom of the display
@@ -218,7 +216,7 @@ local RAID_COOLDOWN_SPELLS = {
     },
     [SYMBOL_OF_HOPE_SPELL_ID] = {
         name = "Symbol of Hope",
-        icon = select(3, GetSpellInfo(SYMBOL_OF_HOPE_SPELL_ID)),
+        icon = select(3, GetSpellInfo(SYMBOL_OF_HOPE_SPELL_ID)) or 135982,
         duration = 300,
     },
     [SHIELD_WALL_SPELL_ID] = {
@@ -393,8 +391,6 @@ local function IterateGroupMembers()
                 tinsert(results, unit);
             end
         end
-    elseif db and db.showSolo then
-        tinsert(results, "player");
     end
     return results;
 end
@@ -1156,7 +1152,7 @@ end
 
 local function CheckManaWarnings()
     if not db.sendWarnings then return; end
-    if not IsInGroup() and not db.sendWarningsSolo then return; end
+    if not IsInGroup() then return; end
 
     local now = GetTime();
     if now - lastWarningTime < db.warningCooldown then return; end
@@ -2376,7 +2372,27 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
         end
 
         cdRow.timerText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
-        if entry.expiryTime <= now then
+
+        -- Check if caster is dead
+        local casterDead = false;
+        local hdata = healers[entry.sourceGUID];
+        if hdata and hdata.unit and UnitExists(hdata.unit) then
+            casterDead = UnitIsDeadOrGhost(hdata.unit);
+        else
+            -- Non-healer (e.g., tank): scan group for unit
+            for _, u in ipairs(IterateGroupMembers()) do
+                if UnitGUID(u) == entry.sourceGUID then
+                    casterDead = UnitIsDeadOrGhost(u);
+                    break;
+                end
+            end
+        end
+
+        if casterDead then
+            cdRow.timerText:SetText("DEAD");
+            cdRow.timerText:SetTextColor(0.5, 0.5, 0.5);
+            cdRow.nameText:SetTextColor(0.5, 0.5, 0.5);
+        elseif entry.expiryTime <= now then
             cdRow.timerText:SetText("Ready");
             cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
         else
@@ -2675,7 +2691,7 @@ RefreshDisplay = function()
         return;
     end
 
-    if not previewActive and not IsInGroup() and not db.showSolo then
+    if not previewActive and not IsInGroup() then
         HealerManaFrame:Hide();
         CooldownFrame:Hide();
         return;
@@ -3048,16 +3064,8 @@ local function RegisterSettings()
         "Toggle the HealerMana display on or off.",
         function() RefreshDisplay(); end);
 
-    AddCheckbox("showSolo", "Show When Solo",
-        "Show the frame even when not in a group.",
-        function(value)
-            if not previewActive and value and not IsInGroup() then
-                ScanGroupComposition();
-            end
-        end);
-
     AddCheckbox("showAverageMana", "Show Average Mana",
-        "Display the average mana percentage across all healers.");
+        "Display the average mana percentage across all healers in the header row.");
 
     AddCheckbox("locked", "Lock Frame Position",
         "Prevent the frames from being dragged.",
@@ -3069,7 +3077,7 @@ local function RegisterSettings()
         end);
 
     AddCheckbox("splitFrames", "Separate Cooldown Frame",
-        "Show raid cooldowns in a separate, independently movable frame.",
+        "Show cooldowns in a separate, independently movable frame.",
         function() RefreshDisplay(); end);
 
     -- Sort dropdown
@@ -3111,16 +3119,16 @@ local function RegisterSettings()
         "Display mana potion cooldown timers.");
 
     AddCheckbox("showRaidCooldowns", "Cooldowns",
-        "Display raid cooldown tracker below healer mana bars.");
+        "Track group cooldowns (Innervate, Mana Tide, Bloodlust, etc.) with Ready/on-cooldown timers.");
 
     AddCheckbox("showStatusDuration", "Buff Durations",
-        "Display remaining duration on status indicators.");
+        "Show remaining seconds on active buffs like Innervate, Mana Tide, and Drinking.");
 
     AddCheckbox("statusIcons", "Status Icons",
-        "Display spell icons instead of text labels for status indicators.");
+        "Show spell icons instead of text labels for healer status indicators (Drinking, Innervate, etc.).");
 
     AddCheckbox("cooldownIcons", "Cooldown Icons",
-        "Display spell icons instead of spell names for raid cooldowns.");
+        "Display spell icons instead of spell names in the cooldowns section.");
 
     AddCheckbox("showRowHighlight", "Row Hover Highlight",
         "Highlight rows on mouse hover for visual feedback.");
@@ -3141,11 +3149,11 @@ local function RegisterSettings()
         8, 24, 1);
 
     AddSlider("iconSize", "Icon Size",
-        "Size of spell icons for status indicators and raid cooldowns.",
+        "Size of spell icons for status indicators and cooldowns.",
         10, 32, 1);
 
     AddSlider("scale", "Scale",
-        "Overall scale of both frames.",
+        "Overall scale of both frames, as a percentage (100% = default size).",
         50, 200, 10,
         function(value)
             HealerManaFrame:SetScale(value / 100);
@@ -3170,15 +3178,15 @@ local function RegisterSettings()
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Mana Color Thresholds"));
 
     AddSlider("colorThresholdGreen", "Green (above %)",
-        "Mana percentage above which the bar shows green.",
+        "Mana percentage above which the text color is green.",
         50, 100, 5);
 
     AddSlider("colorThresholdYellow", "Yellow (above %)",
-        "Mana percentage above which the bar shows yellow.",
+        "Mana percentage above which the text color is yellow.",
         25, 75, 5);
 
     AddSlider("colorThresholdOrange", "Orange (above %)",
-        "Mana percentage above which the bar shows orange.",
+        "Mana percentage above which the text color is orange. Below this value, text is red.",
         0, 50, 5);
 
     -------------------------
@@ -3187,21 +3195,16 @@ local function RegisterSettings()
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Chat Warnings"));
 
     local sendWarnInit = AddCheckbox("sendWarnings", "Send Warning Messages",
-        "Send chat warnings when average healer mana drops below thresholds.");
-
-    local soloWarnInit = AddCheckbox("sendWarningsSolo", "Warn When Solo (/say)",
-        "Also send warnings to /say when not in a group (requires Show When Solo).");
-    soloWarnInit:SetParentInitializer(sendWarnInit,
-        function() return db.sendWarnings; end);
+        "Send a chat warning to party/raid when average healer mana drops below the warning threshold.");
 
     local warnCdInit = AddSlider("warningCooldown", "Warning Cooldown (sec)",
-        "Minimum seconds between warning messages.",
+        "After a warning is sent, wait at least this many seconds before sending another. Prevents chat spam during sustained low mana.",
         10, 120, 5);
     warnCdInit:SetParentInitializer(sendWarnInit,
         function() return db.sendWarnings; end);
 
     local warnThreshInit = AddSlider("warningThreshold", "Warning Threshold (%)",
-        "Send a warning when average healer mana drops below this percentage.",
+        "Send a warning to party/raid chat when average healer mana drops to or below this percentage. The warning resets once mana recovers above this value.",
         1, 50, 1);
     warnThreshInit:SetParentInitializer(sendWarnInit,
         function() return db.sendWarnings; end);
@@ -3241,6 +3244,8 @@ local function OnEvent(self, event, ...)
         db.warningThresholdMed = nil;
         db.warningThresholdLow = nil;
         db.shortenedStatus = nil;
+        db.showSolo = nil;
+        db.sendWarningsSolo = nil;
 
         -- Register native settings panel
         RegisterSettings();
@@ -3278,7 +3283,7 @@ local function OnEvent(self, event, ...)
         print("|cff00ff00HealerMana|r loaded. Type |cff00ffff/hm|r or visit Options > AddOns.");
 
     elseif event == "PLAYER_LOGIN" then
-        if IsInGroup() or db.showSolo then
+        if IsInGroup() then
             ScanGroupComposition();
         end
 
