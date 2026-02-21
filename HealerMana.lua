@@ -34,8 +34,13 @@ local DEFAULT_SETTINGS = {
     colorThresholdOrange = 25,
     sortBy = "mana",
     showRaidCooldowns = true,
+    splitFrames = false,
     frameWidth = nil,
     frameHeight = nil,
+    cdFrameX = nil,
+    cdFrameY = nil,
+    cdFrameWidth = nil,
+    cdFrameHeight = nil,
 };
 
 --------------------------------------------------------------------------------
@@ -152,6 +157,7 @@ local POWER_INFUSION_SPELL_ID = 10060;
 local DIVINE_INTERVENTION_SPELL_ID = 19752;
 local SYMBOL_OF_HOPE_SPELL_ID = 32548;
 local SYMBOL_OF_HOPE_SPELL_NAME = GetSpellInfo(32548) or "Symbol of Hope";
+local SHIELD_WALL_SPELL_ID = 871;
 
 -- Soulstone Resurrection buff IDs (applied to target when warlock uses soulstone)
 local SOULSTONE_BUFF_IDS = {
@@ -201,6 +207,11 @@ local RAID_COOLDOWN_SPELLS = {
         name = "Symbol of Hope",
         icon = select(3, GetSpellInfo(SYMBOL_OF_HOPE_SPELL_ID)),
         duration = 300,
+    },
+    [SHIELD_WALL_SPELL_ID] = {
+        name = GetSpellInfo(SHIELD_WALL_SPELL_ID) or "Shield Wall",
+        icon = select(3, GetSpellInfo(SHIELD_WALL_SPELL_ID)),
+        duration = 1800,
     },
 };
 
@@ -257,12 +268,23 @@ local CLASS_COOLDOWN_SPELLS = {
     ["PALADIN"] = { 633, DIVINE_INTERVENTION_SPELL_ID },          -- Lay on Hands, Divine Intervention
     ["WARLOCK"] = { 20707 },                                      -- Soulstone
     -- Shaman BL/Heroism handled separately (faction-dependent)
+    -- Warrior Shield Wall handled via tank spec detection (TANK_COOLDOWN_SPELLS)
 };
 
 -- Talent-based cooldowns to check for player via IsSpellKnown
 local TALENT_COOLDOWN_SPELLS = {
     ["SHAMAN"] = { MANA_TIDE_CAST_SPELL_ID },
     ["PRIEST"] = { POWER_INFUSION_SPELL_ID, SYMBOL_OF_HOPE_SPELL_ID },
+};
+
+-- Tank spec detection (Protection warriors) for tank-specific cooldowns
+local TANK_TALENT_TABS = {
+    ["WARRIOR"] = { [3] = true },  -- Protection
+};
+
+-- Cooldowns seeded only after confirming tank spec via inspection
+local TANK_COOLDOWN_SPELLS = {
+    ["WARRIOR"] = { SHIELD_WALL_SPELL_ID },
 };
 
 --------------------------------------------------------------------------------
@@ -301,6 +323,12 @@ local cdRowPool = {};
 local activeCdRows = {};
 local savedRaidCooldowns = nil;
 
+-- Cooldown frame state
+local cdContentMinWidth = 120;
+local cdContentMinHeight = 30;
+local cdResizeDragging = false;
+local cdResizeStartCursorX, cdResizeStartCursorY, cdResizeStartW, cdResizeStartH;
+
 -- Warning state
 local lastWarningTime = 0;
 local warningTriggered = false;
@@ -320,6 +348,7 @@ local RefreshDisplay;
 local ScanGroupComposition;
 local StartPreview;
 local StopPreview;
+local UpdateCdResizeHandleVisibility;
 
 --------------------------------------------------------------------------------
 -- Utility Functions
@@ -466,6 +495,29 @@ local function IsHealerCapableClass(unit)
     return HEALER_CAPABLE_CLASSES[classFile] == true, classFile;
 end
 
+-- Seed tank-specific cooldowns for a confirmed tank
+local function SeedTankCooldowns(guid, data)
+    local tankSpells = TANK_COOLDOWN_SPELLS[data.classFile];
+    if not tankSpells then return; end
+    for _, spellId in ipairs(tankSpells) do
+        local key = guid .. "-" .. spellId;
+        if not raidCooldowns[key] then
+            local cdInfo = RAID_COOLDOWN_SPELLS[spellId];
+            if cdInfo then
+                raidCooldowns[key] = {
+                    sourceGUID = guid,
+                    name = data.name or "Unknown",
+                    classFile = data.classFile,
+                    spellId = spellId,
+                    icon = cdInfo.icon,
+                    spellName = cdInfo.name,
+                    expiryTime = 0,
+                };
+            end
+        end
+    end
+end
+
 local function QueueInspect(unit)
     local guid = UnitGUID(unit);
     if not guid then return; end
@@ -475,8 +527,13 @@ local function QueueInspect(unit)
         if entry.guid == guid then return; end
     end
 
-    -- Don't re-queue if we already know their status
-    if healers[guid] and healers[guid].isHealer ~= nil then return; end
+    -- Don't re-queue if we already know all their statuses
+    local data = healers[guid];
+    if data then
+        local needsHealerCheck = data.isHealer == nil and HEALER_CAPABLE_CLASSES[data.classFile];
+        local needsTankCheck = data.isTank == nil and TANK_TALENT_TABS[data.classFile];
+        if not needsHealerCheck and not needsTankCheck then return; end
+    end
 
     tinsert(inspectQueue, { unit = unit, guid = guid });
 end
@@ -485,8 +542,11 @@ local function CheckSelfSpec()
     local guid = UnitGUID("player");
     if not guid or not healers[guid] then return; end
 
-    local isCapable, classFile = IsHealerCapableClass("player");
-    if not isCapable then
+    local _, classFile = UnitClass("player");
+    local isCapable = HEALER_CAPABLE_CLASSES[classFile];
+    local isTankClass = TANK_TALENT_TABS[classFile];
+
+    if not isCapable and not isTankClass then
         healers[guid].isHealer = false;
         return;
     end
@@ -513,18 +573,32 @@ local function CheckSelfSpec()
     end
 
     if maxPoints > 0 and primaryTab then
-        if primaryRole == "HEALER" then
-            healers[guid].isHealer = true;
-        elseif primaryRole then
-            healers[guid].isHealer = false;
-        else
-            -- role is nil in Classic; use talent tab mapping
-            local healTabs = HEALING_TALENT_TABS[classFile];
-            healers[guid].isHealer = (healTabs and healTabs[primaryTab]) or false;
+        -- Healer detection
+        if isCapable then
+            if primaryRole == "HEALER" then
+                healers[guid].isHealer = true;
+            elseif primaryRole then
+                healers[guid].isHealer = false;
+            else
+                local healTabs = HEALING_TALENT_TABS[classFile];
+                healers[guid].isHealer = (healTabs and healTabs[primaryTab]) or false;
+            end
+        end
+        -- Tank detection (role is nil in Classic; use talent tab mapping)
+        if isTankClass then
+            local tankTabs = TANK_TALENT_TABS[classFile];
+            healers[guid].isTank = (tankTabs and tankTabs[primaryTab]) or false;
+            if healers[guid].isTank then
+                SeedTankCooldowns(guid, healers[guid]);
+            end
         end
     else
-        -- API returned no data; assume healer in small groups
-        healers[guid].isHealer = (GetNumGroupMembers() <= 5);
+        if isCapable then
+            healers[guid].isHealer = (GetNumGroupMembers() <= 5);
+        end
+        if isTankClass then
+            healers[guid].isTank = false;
+        end
     end
 end
 
@@ -566,20 +640,38 @@ local function ProcessInspectResult(inspecteeGUID)
         end
     end
 
+    local isCapable = HEALER_CAPABLE_CLASSES[classFile];
+    local isTankClass = TANK_TALENT_TABS[classFile];
+
     if maxPoints > 0 and primaryTab then
-        if primaryRole == "HEALER" then
-            data.isHealer = true;
-        elseif primaryRole then
-            data.isHealer = false;
-        else
-            -- role is nil in Classic; use talent tab mapping
-            local healTabs = HEALING_TALENT_TABS[classFile];
-            data.isHealer = (healTabs and healTabs[primaryTab]) or false;
+        -- Healer detection
+        if isCapable then
+            if primaryRole == "HEALER" then
+                data.isHealer = true;
+            elseif primaryRole then
+                data.isHealer = false;
+            else
+                local healTabs = HEALING_TALENT_TABS[classFile];
+                data.isHealer = (healTabs and healTabs[primaryTab]) or false;
+            end
+        end
+        -- Tank detection
+        if isTankClass then
+            local tankTabs = TANK_TALENT_TABS[classFile];
+            data.isTank = (tankTabs and tankTabs[primaryTab]) or false;
+            if data.isTank then
+                SeedTankCooldowns(inspecteeGUID, data);
+            end
         end
     else
         -- API returned no data; assume healer in small groups, retry in raids
-        if GetNumGroupMembers() <= 5 then
-            data.isHealer = true;
+        if isCapable then
+            if GetNumGroupMembers() <= 5 then
+                data.isHealer = true;
+            end
+        end
+        if isTankClass then
+            data.isTank = false;
         end
     end
 
@@ -638,6 +730,10 @@ local function ProcessInspectQueue()
                     data.isHealer = false;
                 end
             end
+            -- Don't assume tank on failed inspect
+            if data and data.isTank == nil and TANK_TALENT_TABS[data.classFile] then
+                data.isTank = false;
+            end
         end
     end
 end
@@ -678,6 +774,7 @@ ScanGroupComposition = function()
                     hasSymbolOfHope = false,
                     symbolOfHopeExpiry = 0,
                     potionExpiry = 0,
+                    isTank = nil,
                 };
             end
 
@@ -692,6 +789,15 @@ ScanGroupComposition = function()
                 healers[guid].isHealer = false;
             elseif healers[guid].isHealer == nil then
                 -- Self: check directly, others: queue inspect
+                if UnitIsUnit(unit, "player") then
+                    CheckSelfSpec();
+                else
+                    QueueInspect(unit);
+                end
+            end
+
+            -- Tank spec detection (warriors need inspection to confirm Protection)
+            if TANK_TALENT_TABS[classFile] and healers[guid].isTank == nil then
                 if UnitIsUnit(unit, "player") then
                     CheckSelfSpec();
                 else
@@ -791,6 +897,17 @@ ScanGroupComposition = function()
                         end
                     end
                 end
+            end
+        end
+    end
+
+    -- Seed tank-specific cooldowns for confirmed tanks
+    for _, unit in ipairs(units) do
+        local guid = UnitGUID(unit);
+        if guid then
+            local data = healers[guid];
+            if data and data.isTank then
+                SeedTankCooldowns(guid, data);
             end
         end
     end
@@ -1082,8 +1199,8 @@ HealerManaFrame:SetScript("OnDragStop", function(self)
     end
 end);
 
--- Resize handle (bottom-right corner, visible when unlocked)
--- Drags width + height of the frame container; text size stays constant.
+-- Resize handle (disabled — dynamic auto-sizing makes manual resize unnecessary)
+-- Kept for potential experimental testing later.
 local resizeHandle = CreateFrame("Button", nil, HealerManaFrame);
 resizeHandle:SetSize(16, 16);
 resizeHandle:SetPoint("BOTTOMRIGHT", 0, 0);
@@ -1128,20 +1245,103 @@ resizeHandle:SetScript("OnMouseUp", function(self)
     self:SetScript("OnUpdate", nil);
 end);
 
--- Hover-to-show: checked in display OnUpdate to avoid OnScript conflicts with drag
+-- Hover-to-show (disabled — dynamic auto-sizing makes manual resize unnecessary)
+-- Kept for potential experimental testing later.
 local function UpdateResizeHandleVisibility()
-    if not db or db.locked or not HealerManaFrame:IsShown() then
-        if not resizeDragging then
-            resizeHandle:Hide();
-        end
-        return;
+    resizeHandle:Hide();
+end
+
+--------------------------------------------------------------------------------
+-- Cooldown Display Frame (split mode)
+--------------------------------------------------------------------------------
+
+local CooldownFrame = CreateFrame("Frame", "HealerManaCooldownFrame", UIParent, "BackdropTemplate");
+CooldownFrame:SetSize(220, 30);
+CooldownFrame:SetFrameStrata("MEDIUM");
+CooldownFrame:SetBackdrop({
+    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 12,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+});
+CooldownFrame:SetBackdropColor(0, 0, 0, 0.7);
+CooldownFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9);
+CooldownFrame:SetClampedToScreen(true);
+CooldownFrame:SetMovable(true);
+CooldownFrame:EnableMouse(true);
+CooldownFrame:Hide();
+
+-- Title for cooldown frame
+CooldownFrame.title = CooldownFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall");
+CooldownFrame.title:SetPoint("TOP", 0, -7);
+CooldownFrame.title:SetJustifyH("CENTER");
+CooldownFrame.title:SetText("Raid Cooldowns");
+
+-- Separator line below header
+CooldownFrame.separator = CooldownFrame:CreateTexture(nil, "ARTWORK");
+CooldownFrame.separator:SetHeight(1);
+CooldownFrame.separator:SetColorTexture(0.5, 0.5, 0.5, 0.4);
+CooldownFrame.separator:Hide();
+
+-- Drag handlers
+CooldownFrame:RegisterForDrag("LeftButton");
+CooldownFrame:SetScript("OnDragStart", function(self)
+    if db and not db.locked then
+        self:StartMoving();
     end
-    if resizeDragging then return; end
-    if HealerManaFrame:IsMouseOver() or resizeHandle:IsMouseOver() then
-        resizeHandle:Show();
-    else
-        resizeHandle:Hide();
+end);
+CooldownFrame:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing();
+    if db then
+        local left, top = self:GetLeft(), self:GetTop();
+        self:ClearAllPoints();
+        self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top);
+        db.cdFrameX = left;
+        db.cdFrameY = top;
     end
+end);
+
+-- Resize handle for cooldown frame (disabled — dynamic auto-sizing makes manual resize unnecessary)
+-- Kept for potential experimental testing later.
+local cdResizeHandle = CreateFrame("Button", nil, CooldownFrame);
+cdResizeHandle:SetSize(16, 16);
+cdResizeHandle:SetPoint("BOTTOMRIGHT", 0, 0);
+cdResizeHandle:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up");
+cdResizeHandle:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight");
+cdResizeHandle:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down");
+cdResizeHandle:Hide();
+CooldownFrame.resizeHandle = cdResizeHandle;
+
+cdResizeHandle:SetScript("OnMouseDown", function(self, button)
+    if button ~= "LeftButton" then return; end
+    cdResizeDragging = true;
+    local effectiveScale = CooldownFrame:GetEffectiveScale();
+    cdResizeStartCursorX, cdResizeStartCursorY = GetCursorPosition();
+    cdResizeStartW = CooldownFrame:GetWidth();
+    cdResizeStartH = CooldownFrame:GetHeight();
+
+    self:SetScript("OnUpdate", function()
+        local cursorX, cursorY = GetCursorPosition();
+        local dx = (cursorX - cdResizeStartCursorX) / effectiveScale;
+        local dy = (cdResizeStartCursorY - cursorY) / effectiveScale;
+        local newW = max(cdContentMinWidth, min(WIDTH_MAX, cdResizeStartW + dx));
+        local newH = max(cdContentMinHeight, min(HEIGHT_MAX, cdResizeStartH + dy));
+        db.cdFrameWidth = floor(newW + 0.5);
+        db.cdFrameHeight = floor(newH + 0.5);
+        CooldownFrame:SetWidth(db.cdFrameWidth);
+        CooldownFrame:SetHeight(db.cdFrameHeight);
+    end);
+end);
+
+cdResizeHandle:SetScript("OnMouseUp", function(self)
+    cdResizeDragging = false;
+    self:SetScript("OnUpdate", nil);
+end);
+
+-- Disabled — dynamic auto-sizing makes manual resize unnecessary.
+-- Kept for potential experimental testing later.
+UpdateCdResizeHandleVisibility = function()
+    cdResizeHandle:Hide();
 end
 
 --------------------------------------------------------------------------------
@@ -1149,7 +1349,7 @@ end
 --------------------------------------------------------------------------------
 
 local function CreateRowFrame()
-    local frame = CreateFrame("Frame", nil, HealerManaFrame);
+    local frame = CreateFrame("Frame", nil, UIParent);
     frame:SetSize(400, 16);
     frame:Hide();
 
@@ -1175,7 +1375,9 @@ local function CreateRowFrame()
 end
 
 local function AcquireRow()
-    return tremove(rowPool) or CreateRowFrame();
+    local frame = tremove(rowPool) or CreateRowFrame();
+    frame:SetParent(HealerManaFrame);
+    return frame;
 end
 
 local function ReleaseRow(frame)
@@ -1195,7 +1397,7 @@ end
 --------------------------------------------------------------------------------
 
 local function CreateCdRowFrame()
-    local frame = CreateFrame("Frame", nil, HealerManaFrame);
+    local frame = CreateFrame("Frame", nil, UIParent);
     frame:SetSize(400, 16);
     frame:Hide();
 
@@ -1217,7 +1419,13 @@ local function CreateCdRowFrame()
 end
 
 local function AcquireCdRow()
-    return tremove(cdRowPool) or CreateCdRowFrame();
+    local frame = tremove(cdRowPool) or CreateCdRowFrame();
+    if db.splitFrames then
+        frame:SetParent(CooldownFrame);
+    else
+        frame:SetParent(HealerManaFrame);
+    end
+    return frame;
 end
 
 local function ReleaseCdRow(frame)
@@ -1236,42 +1444,23 @@ end
 -- Display Update
 --------------------------------------------------------------------------------
 
-RefreshDisplay = function()
-    if not db or not db.enabled then
-        HealerManaFrame:Hide();
-        return;
-    end
+-- Shared layout constants
+local FONT_PATH = "Fonts\\FRIZQT__.TTF";
+local COL_GAP = 6;
+local LEFT_MARGIN = 10;
+local RIGHT_MARGIN = 10;
+local TOP_PADDING = 8;
+local BOTTOM_PADDING = 8;
 
-    if not previewActive and not IsInGroup() and not db.showSolo then
-        HealerManaFrame:Hide();
-        return;
-    end
-
-    local sortedHealers = GetSortedHealers();
-    if #sortedHealers == 0 then
-        HealerManaFrame:Hide();
-        return;
-    end
-
-    ReleaseAllRows();
-
-    local fontPath = "Fonts\\FRIZQT__.TTF";
-    local rowHeight = max(db.fontSize + 4, 16);
-    local colGap = 6;
-    local leftMargin = 10;
-    local rightMargin = 14;
-    local topPadding = 8;
-    local bottomPadding = 8;
-
-    -- Pre-compute text for all rows so we can measure actual content widths
+-- Pre-compute healer row data into rowDataCache and return measured column widths
+local function PrepareHealerRowData(sortedHealers)
     wipe(rowDataCache);
     local maxNameWidth = 0;
-    -- Fixed-width columns to prevent jitter from changing numbers
     local maxManaWidth = max(MeasureText("100%", db.fontSize), MeasureText("DEAD", db.fontSize));
     local maxStatusLabelWidth = 0;
     local maxStatusDurWidth = 0;
-    local durRefWidth = MeasureText("00:00", db.fontSize - 1);
-    local hasDuration = false;
+    local hasBuff = false;
+    local hasPotion = false;
 
     for _, data in ipairs(sortedHealers) do
         local manaStr;
@@ -1284,7 +1473,6 @@ RefreshDisplay = function()
         end
 
         local statusLabel, statusDur = FormatStatusText(data);
-        -- Measure without color codes for accurate width
         local labelPlain = statusLabel:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
         local durPlain = statusDur:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "");
 
@@ -1293,8 +1481,13 @@ RefreshDisplay = function()
         if labelPlain ~= "" then
             slw = MeasureText(labelPlain, db.fontSize - 1);
         end
+        -- Track which duration formats are present (for stable reference widths)
         if durPlain ~= "" then
-            hasDuration = true;
+            if durPlain:find(":") then
+                hasPotion = true;
+            else
+                hasBuff = true;
+            end
         end
 
         if nw > maxNameWidth then maxNameWidth = nw; end
@@ -1307,9 +1500,14 @@ RefreshDisplay = function()
             statusDur = statusDur,
         });
     end
-    if hasDuration then maxStatusDurWidth = durRefWidth; end
+    -- Use stable reference widths per format to prevent jitter as digits change
+    local durFontSize = db.fontSize - 1;
+    if hasPotion then
+        maxStatusDurWidth = MeasureText("0:00", durFontSize);
+    elseif hasBuff then
+        maxStatusDurWidth = MeasureText("00s", durFontSize);
+    end
 
-    -- Add rendering buffer for outline font overshoot
     local pad = max(4, floor(db.fontSize * 0.35 + 0.5));
     maxNameWidth = maxNameWidth + pad;
     maxManaWidth = maxManaWidth + pad;
@@ -1320,76 +1518,37 @@ RefreshDisplay = function()
         maxStatusDurWidth = maxStatusDurWidth + pad;
     end
 
-    -- Calculate total width from actual content
-    local contentWidth = maxNameWidth + colGap + maxManaWidth;
-    if maxStatusLabelWidth > 0 then
-        contentWidth = contentWidth + colGap + maxStatusLabelWidth;
-        if maxStatusDurWidth > 0 then
-            contentWidth = contentWidth + colGap + maxStatusDurWidth;
-        end
-    end
-    local totalWidth = leftMargin + contentWidth + rightMargin;
+    return maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth;
+end
 
-    -- Ensure minimum width
-    totalWidth = max(totalWidth, 120);
-
-    local yOffset = -topPadding;
-
-    -- Average mana header (centered)
-    if db.showAverageMana then
-        local avgMana = GetAverageMana();
-        local ar, ag, ab = GetManaColor(avgMana);
-        HealerManaFrame.title:SetFont(fontPath, db.fontSize, "OUTLINE");
-        HealerManaFrame.title:SetFormattedText("Avg Mana: |cff%02x%02x%02x%d%%|r",
-            ar * 255, ag * 255, ab * 255, avgMana);
-        HealerManaFrame.title:Show();
-
-        -- Ensure frame is wide enough for title
-        local titleWidth = MeasureText("Avg Mana: " .. avgMana .. "%", db.fontSize) + leftMargin + rightMargin;
-        if titleWidth > totalWidth then totalWidth = titleWidth; end
-
-        yOffset = yOffset - rowHeight;
-
-        -- Position and show separator
-        HealerManaFrame.separator:ClearAllPoints();
-        HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", leftMargin, yOffset);
-        HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -rightMargin, yOffset);
-        HealerManaFrame.separator:Show();
-        yOffset = yOffset - 4;
-    else
-        HealerManaFrame.title:Hide();
-        HealerManaFrame.separator:Hide();
-    end
-
-    -- Healer rows
+-- Render healer rows onto a target frame starting at yOffset; returns updated yOffset and totalWidth
+local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth)
+    local rowHeight = max(db.fontSize + 4, 16);
     for _, rd in ipairs(rowDataCache) do
         local data = rd.data;
         local row = AcquireRow();
 
         row:SetSize(totalWidth, rowHeight);
-        row.nameText:SetFont(fontPath, db.fontSize, "OUTLINE");
-        row.manaText:SetFont(fontPath, db.fontSize, "OUTLINE");
-        row.statusText:SetFont(fontPath, db.fontSize - 1, "OUTLINE");
-        row.durationText:SetFont(fontPath, db.fontSize - 1, "OUTLINE");
+        row.nameText:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+        row.manaText:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+        row.statusText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
+        row.durationText:SetFont(FONT_PATH, db.fontSize - 1, "OUTLINE");
 
-        -- Column widths and anchors
         row.nameText:SetWidth(maxNameWidth);
         row.manaText:SetWidth(maxManaWidth);
         row.statusText:SetWidth(maxStatusLabelWidth);
 
         row.manaText:ClearAllPoints();
-        row.manaText:SetPoint("LEFT", row.nameText, "RIGHT", colGap, 0);
+        row.manaText:SetPoint("LEFT", row.nameText, "RIGHT", COL_GAP, 0);
         row.statusText:ClearAllPoints();
-        row.statusText:SetPoint("LEFT", row.manaText, "RIGHT", colGap, 0);
+        row.statusText:SetPoint("LEFT", row.manaText, "RIGHT", COL_GAP, 0);
         row.durationText:ClearAllPoints();
-        row.durationText:SetPoint("LEFT", row.statusText, "RIGHT", colGap, 0);
+        row.durationText:SetPoint("LEFT", row.statusText, "RIGHT", COL_GAP, 0);
 
-        -- Class-colored name
         local cr, cg, cb = GetClassColor(data.classFile);
         row.nameText:SetText(data.name);
         row.nameText:SetTextColor(cr, cg, cb);
 
-        -- Mana % with color coding
         if data.manaPercent == -2 or data.manaPercent == -1 then
             row.manaText:SetText(rd.manaStr);
             row.manaText:SetTextColor(0.5, 0.5, 0.5);
@@ -1399,119 +1558,304 @@ RefreshDisplay = function()
             row.manaText:SetTextColor(mr, mg, mb);
         end
 
-        -- Status label + duration (separate FontStrings for alignment)
         row.statusText:SetText(rd.statusLabel);
         row.durationText:SetText(rd.statusDur);
 
-        row:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", leftMargin, yOffset);
+        row:SetPoint("TOPLEFT", targetFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
         row:Show();
         tinsert(activeRows, row);
 
         yOffset = yOffset - rowHeight;
     end
+    return yOffset;
+end
 
-    -- Raid cooldown section
+-- Collect sorted cooldown data and render rows onto a target frame; returns updated yOffset and totalWidth
+local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
+    wipe(sortedCooldownCache);
+    for _, entry in pairs(raidCooldowns) do
+        tinsert(sortedCooldownCache, entry);
+    end
+
+    if #sortedCooldownCache == 0 then return yOffset, totalWidth; end
+
+    local now = GetTime();
+    local rowHeight = max(db.fontSize + 4, 16);
+    sort(sortedCooldownCache, function(a, b)
+        return a.spellName < b.spellName;
+    end);
+
+    -- Measure column widths
+    local cdNameMax = 0;
+    local cdSpellMax = 0;
+    local cdFontSize = db.fontSize - 1;
+    local cdTimerMax = MeasureText("Ready", cdFontSize);
+
+    for _, entry in ipairs(sortedCooldownCache) do
+        local nw = MeasureText(entry.name, cdFontSize);
+        if nw > cdNameMax then cdNameMax = nw; end
+        local sw = MeasureText(entry.spellName, cdFontSize);
+        if sw > cdSpellMax then cdSpellMax = sw; end
+    end
+
+    local cdPad = max(4, floor(cdFontSize * 0.35 + 0.5));
+    cdNameMax = cdNameMax + cdPad;
+    cdSpellMax = cdSpellMax + cdPad;
+    cdTimerMax = cdTimerMax + cdPad;
+
+    local cdContentWidth = cdNameMax + COL_GAP + cdSpellMax + COL_GAP + cdTimerMax;
+    local cdTotalWidth = LEFT_MARGIN + cdContentWidth + RIGHT_MARGIN;
+    if cdTotalWidth > totalWidth then totalWidth = cdTotalWidth; end
+
+    for _, entry in ipairs(sortedCooldownCache) do
+        local cdRow = AcquireCdRow();
+
+        cdRow.nameText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
+        cdRow.nameText:SetWidth(cdNameMax);
+        local cr, cg, cb = GetClassColor(entry.classFile);
+        cdRow.nameText:SetText(entry.name);
+        cdRow.nameText:SetTextColor(cr, cg, cb);
+
+        cdRow.spellText:ClearAllPoints();
+        cdRow.spellText:SetPoint("LEFT", cdRow.nameText, "RIGHT", COL_GAP, 0);
+        cdRow.spellText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
+        cdRow.spellText:SetWidth(cdSpellMax);
+        cdRow.spellText:SetText(entry.spellName);
+        cdRow.spellText:SetTextColor(cr, cg, cb);
+
+        cdRow.timerText:ClearAllPoints();
+        cdRow.timerText:SetPoint("LEFT", cdRow.spellText, "RIGHT", COL_GAP, 0);
+        cdRow.timerText:SetFont(FONT_PATH, cdFontSize, "OUTLINE");
+        if entry.expiryTime <= now then
+            cdRow.timerText:SetText("Ready");
+            cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
+        else
+            local remaining = entry.expiryTime - now;
+            cdRow.timerText:SetText(format("%d:%02d", floor(remaining / 60), floor(remaining) % 60));
+            cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
+        end
+
+        cdRow:SetSize(totalWidth, rowHeight);
+        cdRow:SetPoint("TOPLEFT", targetFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+        cdRow:Show();
+        tinsert(activeCdRows, cdRow);
+
+        yOffset = yOffset - rowHeight;
+    end
+
+    return yOffset, totalWidth;
+end
+
+-- Healer rows only on HealerManaFrame (split mode)
+local function RefreshHealerDisplay(sortedHealers)
+    ReleaseAllRows();
+
+    local rowHeight = max(db.fontSize + 4, 16);
+    local maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth = PrepareHealerRowData(sortedHealers);
+
+    local contentWidth = maxNameWidth + COL_GAP + maxManaWidth;
+    if maxStatusLabelWidth > 0 then
+        contentWidth = contentWidth + COL_GAP + maxStatusLabelWidth;
+        if maxStatusDurWidth > 0 then
+            contentWidth = contentWidth + COL_GAP + maxStatusDurWidth;
+        end
+    end
+    local totalWidth = max(LEFT_MARGIN + contentWidth + RIGHT_MARGIN, 120);
+
+    local yOffset = -TOP_PADDING;
+
+    if db.showAverageMana then
+        local avgMana = GetAverageMana();
+        local ar, ag, ab = GetManaColor(avgMana);
+        HealerManaFrame.title:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+        HealerManaFrame.title:SetFormattedText("Avg Mana: |cff%02x%02x%02x%d%%|r",
+            ar * 255, ag * 255, ab * 255, avgMana);
+        HealerManaFrame.title:Show();
+
+        local titleWidth = MeasureText("Avg Mana: " .. avgMana .. "%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+        if titleWidth > totalWidth then totalWidth = titleWidth; end
+
+        yOffset = yOffset - rowHeight;
+        HealerManaFrame.separator:ClearAllPoints();
+        HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+        HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+        HealerManaFrame.separator:Show();
+        yOffset = yOffset - 4;
+    else
+        HealerManaFrame.title:Hide();
+        HealerManaFrame.separator:Hide();
+    end
+
+    yOffset = RenderHealerRows(HealerManaFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth);
+
+    -- Hide merged-mode cd separator
+    HealerManaFrame.cdSeparator:Hide();
+
+    local totalHeight = -yOffset + BOTTOM_PADDING;
+    contentMinWidth = totalWidth;
+    contentMinHeight = totalHeight;
+
+    -- Resize disabled: auto-size to content only
+    HealerManaFrame:SetHeight(totalHeight);
+    HealerManaFrame:SetWidth(totalWidth);
+    HealerManaFrame:Show();
+end
+
+-- Cooldown rows only on CooldownFrame (split mode)
+local function RefreshCooldownDisplay()
+    ReleaseAllCdRows();
+
+    if not db.showRaidCooldowns then
+        CooldownFrame:Hide();
+        return;
+    end
+
+    -- Check if there are any cooldowns to show
+    local hasCooldowns = false;
+    for _ in pairs(raidCooldowns) do
+        hasCooldowns = true;
+        break;
+    end
+    if not hasCooldowns then
+        CooldownFrame:Hide();
+        return;
+    end
+
+    local rowHeight = max(db.fontSize + 4, 16);
+    local yOffset = -TOP_PADDING;
+    local totalWidth = 120;
+
+    -- Title
+    CooldownFrame.title:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+    CooldownFrame.title:SetText("Raid Cooldowns");
+    CooldownFrame.title:Show();
+
+    local titleWidth = MeasureText("Raid Cooldowns", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+    if titleWidth > totalWidth then totalWidth = titleWidth; end
+
+    yOffset = yOffset - rowHeight;
+    CooldownFrame.separator:ClearAllPoints();
+    CooldownFrame.separator:SetPoint("TOPLEFT", CooldownFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+    CooldownFrame.separator:SetPoint("TOPRIGHT", CooldownFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+    CooldownFrame.separator:Show();
+    yOffset = yOffset - 4;
+
+    yOffset, totalWidth = RenderCooldownRows(CooldownFrame, yOffset, totalWidth);
+
+    local totalHeight = -yOffset + BOTTOM_PADDING;
+    cdContentMinWidth = totalWidth;
+    cdContentMinHeight = totalHeight;
+
+    -- Resize disabled: auto-size to content only
+    CooldownFrame:SetHeight(totalHeight);
+    CooldownFrame:SetWidth(totalWidth);
+    CooldownFrame:Show();
+end
+
+-- Merged display: healer rows + cooldown rows on HealerManaFrame (original behavior)
+local function RefreshMergedDisplay(sortedHealers)
+    ReleaseAllRows();
+
+    local rowHeight = max(db.fontSize + 4, 16);
+    local maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth = PrepareHealerRowData(sortedHealers);
+
+    local contentWidth = maxNameWidth + COL_GAP + maxManaWidth;
+    if maxStatusLabelWidth > 0 then
+        contentWidth = contentWidth + COL_GAP + maxStatusLabelWidth;
+        if maxStatusDurWidth > 0 then
+            contentWidth = contentWidth + COL_GAP + maxStatusDurWidth;
+        end
+    end
+    local totalWidth = max(LEFT_MARGIN + contentWidth + RIGHT_MARGIN, 120);
+
+    local yOffset = -TOP_PADDING;
+
+    if db.showAverageMana then
+        local avgMana = GetAverageMana();
+        local ar, ag, ab = GetManaColor(avgMana);
+        HealerManaFrame.title:SetFont(FONT_PATH, db.fontSize, "OUTLINE");
+        HealerManaFrame.title:SetFormattedText("Avg Mana: |cff%02x%02x%02x%d%%|r",
+            ar * 255, ag * 255, ab * 255, avgMana);
+        HealerManaFrame.title:Show();
+
+        local titleWidth = MeasureText("Avg Mana: " .. avgMana .. "%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+        if titleWidth > totalWidth then totalWidth = titleWidth; end
+
+        yOffset = yOffset - rowHeight;
+        HealerManaFrame.separator:ClearAllPoints();
+        HealerManaFrame.separator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+        HealerManaFrame.separator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
+        HealerManaFrame.separator:Show();
+        yOffset = yOffset - 4;
+    else
+        HealerManaFrame.title:Hide();
+        HealerManaFrame.separator:Hide();
+    end
+
+    yOffset = RenderHealerRows(HealerManaFrame, yOffset, totalWidth, maxNameWidth, maxManaWidth, maxStatusLabelWidth, maxStatusDurWidth);
+
+    -- Raid cooldown section (merged)
     ReleaseAllCdRows();
     HealerManaFrame.cdSeparator:Hide();
 
     if db.showRaidCooldowns then
-        -- Collect active cooldowns into sorted cache
-        wipe(sortedCooldownCache);
-        for _, entry in pairs(raidCooldowns) do
-            tinsert(sortedCooldownCache, entry);
+        -- Check if there are cooldowns
+        local hasCooldowns = false;
+        for _ in pairs(raidCooldowns) do
+            hasCooldowns = true;
+            break;
         end
 
-        if #sortedCooldownCache > 0 then
-            local now = GetTime();
-            sort(sortedCooldownCache, function(a, b)
-                return a.spellName < b.spellName;
-            end);
-
-            -- Draw separator
+        if hasCooldowns then
             yOffset = yOffset - 4;
             HealerManaFrame.cdSeparator:ClearAllPoints();
-            HealerManaFrame.cdSeparator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", leftMargin, yOffset);
-            HealerManaFrame.cdSeparator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -rightMargin, yOffset);
+            HealerManaFrame.cdSeparator:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", LEFT_MARGIN, yOffset);
+            HealerManaFrame.cdSeparator:SetPoint("TOPRIGHT", HealerManaFrame, "TOPRIGHT", -RIGHT_MARGIN, yOffset);
             HealerManaFrame.cdSeparator:Show();
             yOffset = yOffset - 4;
 
-            -- Measure column widths for alignment
-            local cdNameMax = 0;
-            local cdSpellMax = 0;
-            local cdTimerMax = 0;
-            local cdFontSize = db.fontSize - 1;
-            local now = GetTime();
-
-            -- Use fixed reference for timer column to prevent width jitter
-            cdTimerMax = MeasureText("Ready", cdFontSize);
-            for _, entry in ipairs(sortedCooldownCache) do
-                local nw = MeasureText(entry.name, cdFontSize);
-                if nw > cdNameMax then cdNameMax = nw; end
-                local sw = MeasureText(entry.spellName, cdFontSize);
-                if sw > cdSpellMax then cdSpellMax = sw; end
-            end
-
-            local cdPad = max(4, floor(cdFontSize * 0.35 + 0.5));
-            cdNameMax = cdNameMax + cdPad;
-            cdSpellMax = cdSpellMax + cdPad;
-            cdTimerMax = cdTimerMax + cdPad;
-
-            -- Check if cooldown section is wider than healer content
-            local cdContentWidth = cdNameMax + colGap + cdSpellMax + colGap + cdTimerMax;
-            local cdTotalWidth = leftMargin + cdContentWidth + rightMargin;
-            if cdTotalWidth > totalWidth then totalWidth = cdTotalWidth; end
-
-            -- Render cooldown rows
-            for _, entry in ipairs(sortedCooldownCache) do
-                local cdRow = AcquireCdRow();
-
-                cdRow.nameText:SetFont(fontPath, cdFontSize, "OUTLINE");
-                cdRow.nameText:SetWidth(cdNameMax);
-                local cr, cg, cb = GetClassColor(entry.classFile);
-                cdRow.nameText:SetText(entry.name);
-                cdRow.nameText:SetTextColor(cr, cg, cb);
-
-                cdRow.spellText:ClearAllPoints();
-                cdRow.spellText:SetPoint("LEFT", cdRow.nameText, "RIGHT", colGap, 0);
-                cdRow.spellText:SetFont(fontPath, cdFontSize, "OUTLINE");
-                cdRow.spellText:SetWidth(cdSpellMax);
-                cdRow.spellText:SetText(entry.spellName);
-                local sr, sg, sb = GetClassColor(entry.classFile);
-                cdRow.spellText:SetTextColor(sr, sg, sb);
-
-                cdRow.timerText:ClearAllPoints();
-                cdRow.timerText:SetPoint("LEFT", cdRow.spellText, "RIGHT", colGap, 0);
-                cdRow.timerText:SetFont(fontPath, cdFontSize, "OUTLINE");
-                if entry.expiryTime <= now then
-                    cdRow.timerText:SetText("Ready");
-                    cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
-                else
-                    local remaining = entry.expiryTime - now;
-                    cdRow.timerText:SetText(format("%d:%02d", floor(remaining / 60), floor(remaining) % 60));
-                    cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
-                end
-
-                cdRow:SetSize(totalWidth, rowHeight);
-                cdRow:SetPoint("TOPLEFT", HealerManaFrame, "TOPLEFT", leftMargin, yOffset);
-                cdRow:Show();
-                tinsert(activeCdRows, cdRow);
-
-                yOffset = yOffset - rowHeight;
-            end
+            yOffset, totalWidth = RenderCooldownRows(HealerManaFrame, yOffset, totalWidth);
         end
     end
 
-    -- Track content-driven minimums (used by resize handle to prevent clipping)
-    local totalHeight = -yOffset + bottomPadding;
+    local totalHeight = -yOffset + BOTTOM_PADDING;
     contentMinWidth = totalWidth;
     contentMinHeight = totalHeight;
 
-    -- Respect user-set dimensions as minimums
-    totalHeight = max(totalHeight, db.frameHeight or 30);
-    totalWidth = max(totalWidth, db.frameWidth or 120);
+    -- Resize disabled: auto-size to content only
     HealerManaFrame:SetHeight(totalHeight);
     HealerManaFrame:SetWidth(totalWidth);
     HealerManaFrame:Show();
+end
+
+-- Dispatcher
+RefreshDisplay = function()
+    if not db or not db.enabled then
+        HealerManaFrame:Hide();
+        CooldownFrame:Hide();
+        return;
+    end
+
+    if not previewActive and not IsInGroup() and not db.showSolo then
+        HealerManaFrame:Hide();
+        CooldownFrame:Hide();
+        return;
+    end
+
+    local sortedHealers = GetSortedHealers();
+    if #sortedHealers == 0 then
+        HealerManaFrame:Hide();
+        CooldownFrame:Hide();
+        return;
+    end
+
+    if db.splitFrames then
+        RefreshHealerDisplay(sortedHealers);
+        RefreshCooldownDisplay();
+    else
+        CooldownFrame:Hide();
+        RefreshMergedDisplay(sortedHealers);
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -1519,16 +1863,45 @@ end
 --------------------------------------------------------------------------------
 
 local previewTimer = 0;
+local previewFromSettings = false;
 
--- Display OnUpdate: runs only when HealerManaFrame is visible (animations, mana updates)
-HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
+-- Per-frame OnUpdate disabled (resize handles disabled, no other per-frame work needed)
+
+-- Background OnUpdate: drives ALL periodic logic (always runs, avoids hidden-frame deadlock)
+local BackgroundFrame = CreateFrame("Frame");
+BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
+    -- Stop settings preview when panel closes
+    if previewFromSettings and SettingsPanel and not SettingsPanel:IsShown() then
+        StopPreview();
+        previewFromSettings = false;
+    end
+
+    -- Inspect queue (skip during preview)
+    if not previewActive then
+        inspectElapsed = inspectElapsed + elapsed;
+        if inspectElapsed >= INSPECT_REQUEUE_INTERVAL then
+            inspectElapsed = 0;
+            if #inspectQueue == 0 and not inspectPending then
+                for guid, data in pairs(healers) do
+                    if data.unit and UnitExists(data.unit) then
+                        local needsHealerCheck = data.isHealer == nil and HEALER_CAPABLE_CLASSES[data.classFile];
+                        local needsTankCheck = data.isTank == nil and TANK_TALENT_TABS[data.classFile];
+                        if needsHealerCheck or needsTankCheck then
+                            QueueInspect(data.unit);
+                        end
+                    end
+                end
+            end
+            ProcessInspectQueue();
+        end
+    end
+
+    -- Throttled display update
     updateElapsed = updateElapsed + elapsed;
     if updateElapsed >= UPDATE_INTERVAL then
         updateElapsed = 0;
-        UpdateResizeHandleVisibility();
 
         if previewActive then
-            -- Animate mock mana values: slow drift with occasional drinking recovery
             previewTimer = previewTimer + UPDATE_INTERVAL;
             local now = GetTime();
             for guid, data in pairs(healers) do
@@ -1536,7 +1909,6 @@ HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
                     local seed = (data.driftSeed or 1);
                     local drift = sin(previewTimer * 0.4 * seed) * 0.8 + cos(previewTimer * 0.15 * seed) * 0.5;
                     data.manaPercent = max(0, min(100, data.baseMana + floor(drift * 12)));
-                    -- Loop status durations so they restart after expiring
                     if data.isDrinking and data.drinkExpiry > 0 and data.drinkExpiry <= now then
                         data.drinkExpiry = now + 18;
                     end
@@ -1554,7 +1926,6 @@ HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
                     end
                 end
             end
-            -- Loop some preview raid cooldown timers; leave others as "Ready"
             for key, entry in pairs(raidCooldowns) do
                 if entry.expiryTime <= now then
                     if key == "preview-inn" or key == "preview-rebirth" or key == "preview-ss" or key == "preview-pi" or key == "preview-loh" then
@@ -1572,47 +1943,6 @@ HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
         end
 
         RefreshDisplay();
-    end
-end);
-
--- Background OnUpdate: always runs (inspect queue + display visibility check)
--- Separate frame because HealerManaFrame is hidden until healers are confirmed,
--- and hidden frames don't receive OnUpdate in WoW.
-local previewFromSettings = false;
-local settingsPanelHooked = false;
-
-local BackgroundFrame = CreateFrame("Frame");
-BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
-    -- Stop settings preview when panel closes
-    if previewFromSettings and SettingsPanel and not SettingsPanel:IsShown() then
-        StopPreview();
-        previewFromSettings = false;
-    end
-
-    if previewActive then return; end
-
-    inspectElapsed = inspectElapsed + elapsed;
-    if inspectElapsed >= INSPECT_REQUEUE_INTERVAL then
-        inspectElapsed = 0;
-        -- Re-queue members still awaiting inspection
-        if #inspectQueue == 0 and not inspectPending then
-            for guid, data in pairs(healers) do
-                if data.isHealer == nil and data.unit and UnitExists(data.unit) then
-                    QueueInspect(data.unit);
-                end
-            end
-        end
-        ProcessInspectQueue();
-    end
-
-    -- When main frame is hidden, periodically check if it should become visible
-    if not HealerManaFrame:IsShown() then
-        updateElapsed = updateElapsed + elapsed;
-        if updateElapsed >= UPDATE_INTERVAL then
-            updateElapsed = 0;
-            UpdateManaValues();
-            RefreshDisplay();
-        end
     end
 end);
 
@@ -1752,9 +2082,20 @@ StartPreview = function()
         spellName = sohInfo.name,
         expiryTime = now + 240,
     };
+    local swInfo = RAID_COOLDOWN_SPELLS[SHIELD_WALL_SPELL_ID];
+    raidCooldowns["preview-sw"] = {
+        sourceGUID = "preview-guid-sw",
+        name = "Tankyboy",
+        classFile = "WARRIOR",
+        spellId = SHIELD_WALL_SPELL_ID,
+        icon = swInfo.icon,
+        spellName = swInfo.name,
+        expiryTime = now + 1500,
+    };
 
-    -- Unlock frame for dragging while options are open
+    -- Unlock frames for dragging while options are open
     HealerManaFrame:EnableMouse(true);
+    CooldownFrame:EnableMouse(true);
     RefreshDisplay();
 end
 
@@ -1783,6 +2124,8 @@ StopPreview = function()
     -- Restore lock state and frame strata
     HealerManaFrame:EnableMouse(not db.locked);
     HealerManaFrame:SetFrameStrata("MEDIUM");
+    CooldownFrame:EnableMouse(not db.locked);
+    CooldownFrame:SetFrameStrata("MEDIUM");
     RefreshDisplay();
 end
 
@@ -1852,11 +2195,17 @@ local function RegisterSettings()
         "Display the average mana percentage across all healers.");
 
     AddCheckbox("locked", "Lock Frame Position",
-        "Prevent the frame from being dragged.",
+        "Prevent the frames from being dragged.",
         function(value)
             HealerManaFrame:EnableMouse(not value);
+            CooldownFrame:EnableMouse(not value);
             UpdateResizeHandleVisibility();
+            UpdateCdResizeHandleVisibility();
         end);
+
+    AddCheckbox("splitFrames", "Separate Cooldown Frame",
+        "Show raid cooldowns in a separate, independently movable frame.",
+        function() RefreshDisplay(); end);
 
     -- Sort dropdown
     local sortSetting = Settings.RegisterProxySetting(category,
@@ -1915,16 +2264,22 @@ local function RegisterSettings()
         8, 24, 1);
 
     AddSlider("scale", "Scale",
-        "Overall scale of the HealerMana frame.",
+        "Overall scale of both frames.",
         50, 200, 10,
-        function(value) HealerManaFrame:SetScale(value / 100); end,
+        function(value)
+            HealerManaFrame:SetScale(value / 100);
+            CooldownFrame:SetScale(value / 100);
+        end,
         function(raw) return floor(raw * 100 + 0.5); end,
         function(value) return value / 100; end);
 
     AddSlider("bgOpacity", "Display Opacity (%)",
-        "Background opacity of the HealerMana frame.",
+        "Background opacity of both frames.",
         0, 100, 5,
-        function(value) HealerManaFrame:SetBackdropColor(0, 0, 0, value / 100); end,
+        function(value)
+            HealerManaFrame:SetBackdropColor(0, 0, 0, value / 100);
+            CooldownFrame:SetBackdropColor(0, 0, 0, value / 100);
+        end,
         function(raw) return floor(raw * 100 + 0.5); end,
         function(value) return value / 100; end);
 
@@ -2008,7 +2363,7 @@ local function OnEvent(self, event, ...)
         -- Register native settings panel
         RegisterSettings();
 
-        -- Apply saved position
+        -- Apply saved position (healer frame)
         if db.frameX and db.frameY then
             HealerManaFrame:ClearAllPoints();
             HealerManaFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", db.frameX, db.frameY);
@@ -2016,10 +2371,24 @@ local function OnEvent(self, event, ...)
             HealerManaFrame:SetPoint("LEFT", UIParent, "LEFT", 20, 100);
         end
 
-        -- Apply settings
+        -- Apply saved position (cooldown frame — default below healer frame)
+        if db.cdFrameX and db.cdFrameY then
+            CooldownFrame:ClearAllPoints();
+            CooldownFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", db.cdFrameX, db.cdFrameY);
+        else
+            local healerLeft = db.frameX or 20;
+            local healerTop = db.frameY or (UIParent:GetHeight() / 2 + 100);
+            CooldownFrame:ClearAllPoints();
+            CooldownFrame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", healerLeft, healerTop - 150);
+        end
+
+        -- Apply settings to both frames
         HealerManaFrame:SetScale(db.scale);
         HealerManaFrame:SetBackdropColor(0, 0, 0, db.bgOpacity);
         HealerManaFrame:EnableMouse(not db.locked);
+        CooldownFrame:SetScale(db.scale);
+        CooldownFrame:SetBackdropColor(0, 0, 0, db.bgOpacity);
+        CooldownFrame:EnableMouse(not db.locked);
         UpdateResizeHandleVisibility();
 
         self:UnregisterEvent("ADDON_LOADED");
@@ -2102,6 +2471,7 @@ local function OpenOptions()
     end
     previewFromSettings = true;
     HealerManaFrame:SetFrameStrata("TOOLTIP");
+    CooldownFrame:SetFrameStrata("TOOLTIP");
     Settings.OpenToCategory(healerManaCategoryID);
 end
 
@@ -2114,11 +2484,13 @@ local function SlashCommandHandler(msg)
     elseif msg == "lock" then
         db.locked = not db.locked;
         HealerManaFrame:EnableMouse(not db.locked);
+        CooldownFrame:EnableMouse(not db.locked);
         UpdateResizeHandleVisibility();
+        UpdateCdResizeHandleVisibility();
         if db.locked then
-            print("|cff00ff00HealerMana|r frame locked.");
+            print("|cff00ff00HealerMana|r frames locked.");
         else
-            print("|cff00ff00HealerMana|r frame unlocked. Drag to reposition.");
+            print("|cff00ff00HealerMana|r frames unlocked. Drag to reposition.");
         end
 
     elseif msg == "test" then
@@ -2137,11 +2509,21 @@ local function SlashCommandHandler(msg)
         HealerManaFrame:SetScale(db.scale);
         HealerManaFrame:SetBackdropColor(0, 0, 0, db.bgOpacity);
         HealerManaFrame:EnableMouse(not db.locked);
+        CooldownFrame:SetScale(db.scale);
+        CooldownFrame:SetBackdropColor(0, 0, 0, db.bgOpacity);
+        CooldownFrame:EnableMouse(not db.locked);
         UpdateResizeHandleVisibility();
+        UpdateCdResizeHandleVisibility();
         HealerManaFrame:ClearAllPoints();
         HealerManaFrame:SetPoint("LEFT", UIParent, "LEFT", 20, 100);
+        CooldownFrame:ClearAllPoints();
+        CooldownFrame:SetPoint("LEFT", UIParent, "LEFT", 20, -50);
         db.frameX = nil;
         db.frameY = nil;
+        db.cdFrameX = nil;
+        db.cdFrameY = nil;
+        db.cdFrameWidth = nil;
+        db.cdFrameHeight = nil;
         print("|cff00ff00HealerMana|r settings reset to defaults.");
 
     elseif msg == "help" then
