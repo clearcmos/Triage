@@ -1013,9 +1013,11 @@ local HEIGHT_MAX = 600;
 local contentMinWidth = WIDTH_MIN;
 local contentMinHeight = HEIGHT_MIN;
 local resizeStartCursorX, resizeStartCursorY, resizeStartW, resizeStartH;
+local resizeDragging = false;
 
 resizeHandle:SetScript("OnMouseDown", function(self, button)
     if button ~= "LeftButton" then return; end
+    resizeDragging = true;
     local effectiveScale = HealerManaFrame:GetEffectiveScale();
     resizeStartCursorX, resizeStartCursorY = GetCursorPosition();
     resizeStartW = HealerManaFrame:GetWidth();
@@ -1035,19 +1037,25 @@ resizeHandle:SetScript("OnMouseDown", function(self, button)
 end);
 
 resizeHandle:SetScript("OnMouseUp", function(self)
+    resizeDragging = false;
     self:SetScript("OnUpdate", nil);
 end);
 
+-- Hover-to-show: checked in display OnUpdate to avoid OnScript conflicts with drag
 local function UpdateResizeHandleVisibility()
-    if db and not db.locked and HealerManaFrame:IsShown() then
+    if not db or db.locked or not HealerManaFrame:IsShown() then
+        if not resizeDragging then
+            resizeHandle:Hide();
+        end
+        return;
+    end
+    if resizeDragging then return; end
+    if HealerManaFrame:IsMouseOver() or resizeHandle:IsMouseOver() then
         resizeHandle:Show();
     else
         resizeHandle:Hide();
     end
 end
-
-HealerManaFrame:HookScript("OnShow", UpdateResizeHandleVisibility);
-HealerManaFrame:HookScript("OnHide", UpdateResizeHandleVisibility);
 
 --------------------------------------------------------------------------------
 -- Row Frame Pool
@@ -1434,6 +1442,7 @@ HealerManaFrame:SetScript("OnUpdate", function(self, elapsed)
     updateElapsed = updateElapsed + elapsed;
     if updateElapsed >= UPDATE_INTERVAL then
         updateElapsed = 0;
+        UpdateResizeHandleVisibility();
 
         if previewActive then
             -- Animate mock mana values: slow drift with occasional drinking recovery

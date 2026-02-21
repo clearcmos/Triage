@@ -13,11 +13,11 @@ Built specifically for **TBC Classic Anniversary**.
 - **Average mana** - Displays the average mana across all healers at the top
 - **Status indicators** - Shows when healers are Drinking, have Innervate, or Mana Tide Totem active, with optional durations
 - **Potion tracking** - Tracks potion cooldowns (2 min) via combat log
-- **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Bloodlust/Heroism, Power Infusion, Divine Intervention, Rebirth, and Lay on Hands with per-caster countdown timers
+- **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Bloodlust/Heroism, Power Infusion, Divine Intervention, Rebirth, and Lay on Hands. Shows "Ready" or countdown timer per caster. Class-baseline cooldowns detected automatically on group join.
 - **Dead/DC detection** - Grey indicators for dead or disconnected healers
 - **Chat warnings** - Optional automatic warnings to party/raid when healer mana drops below configurable thresholds
 - **Sorting** - Sort healers by lowest mana first or alphabetically
-- **Resizable frame** - Drag the corner handle to resize (visible when unlocked)
+- **Resizable frame** - Drag the corner handle to resize (appears on hover when unlocked)
 - **Fully configurable** - Options panel with font size, scale, opacity, color thresholds, warning thresholds, and more
 - **Live preview** - See your changes instantly with animated mock data while configuring
 

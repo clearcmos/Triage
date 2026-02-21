@@ -3,9 +3,11 @@
 **Raid Cooldown Tracker & Resizable Frame**
 
 - Added raid cooldown tracking: Innervate, Mana Tide Totem, Bloodlust/Heroism, Power Infusion, Divine Intervention, Rebirth, Lay on Hands
-- Cooldowns displayed below healer mana rows with spell icons, class-colored caster names, and countdown timers
-- Added resizable frame with drag handle (visible when unlocked), clamped to content-driven minimums
-- Preview system now includes mock raid cooldowns with looping timers
+- Class-baseline cooldowns pre-seeded as "Ready" on group join; player talent cooldowns detected via IsSpellKnown
+- Cooldowns show green "Ready" when available or countdown timer when on cooldown
+- Cooldowns displayed below healer mana rows with spell icons, class-colored caster names
+- Added resizable frame with drag handle (appears on hover when unlocked), clamped to content-driven minimums
+- Preview system now includes mock raid cooldowns with Ready and on-cooldown states
 
 ## v1.0.0
 

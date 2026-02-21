@@ -6,7 +6,7 @@ HealerMana is a WoW Classic Anniversary Edition addon that tracks healer mana in
 
 ## Architecture
 
-**Single-file addon** — all logic in `HealerMana.lua` (~2340 lines). No XML, no external dependencies.
+**Single-file addon** — all logic in `HealerMana.lua` (~2460 lines). No XML, no external dependencies.
 
 ### Key Systems
 
@@ -17,9 +17,9 @@ HealerMana is a WoW Classic Anniversary Edition addon that tracks healer mana in
 
 2. **Inspection Queue** — async system that queues `NotifyInspect()` calls with 2.5s cooldown, pauses in combat, validates range via `CanInspect()`. Runs on a separate `BackgroundFrame` (always shown) to avoid the hidden-frame OnUpdate deadlock. Periodically re-queues unresolved members.
 
-3. **Raid Cooldown Tracker** — monitors `SPELL_CAST_SUCCESS` in combat log for key raid cooldowns. Tracks per-caster, auto-expires, displays with spell icons and countdown timers in a separate section below the healer mana rows. Multi-rank spells (Rebirth, Lay on Hands) share a single info table.
+3. **Raid Cooldown Tracker** — monitors `SPELL_CAST_SUCCESS` in combat log for key raid cooldowns. Class-baseline cooldowns (Innervate, Rebirth, Lay on Hands, Divine Intervention, Bloodlust/Heroism) are pre-seeded as "Ready" on group scan; player talent cooldowns (Mana Tide, Power Infusion) detected via `IsSpellKnown()`. Multi-rank spells use canonical spell IDs for consistent keys. Displays with spell icons, class-colored caster names, and countdown timers (or green "Ready") in a section below healer mana rows.
 
-4. **Display System** — movable, resizable frame with BackdropTemplate, object-pooled row frames per healer (class-colored name + mana % + status indicators). Resize handle visible when unlocked, clamped to content-driven minimums.
+4. **Display System** — movable, resizable frame with BackdropTemplate, object-pooled row frames per healer (class-colored name + mana % + status indicators). Resize handle appears on hover (checked in display OnUpdate to avoid conflicts with drag OnUpdate), clamped to content-driven minimums.
 
 5. **Options GUI** — Ace3-style widgets (sliders, checkboxes, dropdowns) created in Lua, lazy-loaded on first `/hm` call. Live preview with animated mock data while options are open.
 
@@ -29,25 +29,25 @@ HealerMana is a WoW Classic Anniversary Edition addon that tracks healer mana in
 |---------|----------------|-------------|
 | S1      | 1-39           | Header, DEFAULT_SETTINGS |
 | S2      | 41-81          | Local performance caches |
-| S3      | 83-211         | Constants (classes, healing tabs, potions, spell names, raid cooldowns) |
-| S4      | 213-265        | State variables |
-| S5      | 267-385        | Utility functions (iteration, colors, measurement, status formatting) |
-| S6      | 387-570        | Healer detection engine (self-spec, inspect results, inspect queue) |
-| S7      | 572-663        | Group scanning |
-| S8      | 665-700        | Mana updating |
-| S9      | 702-749        | Buff/status tracking |
-| S10     | 751-762        | Raid cooldown cleanup |
-| S11     | 764-800        | Potion + raid cooldown tracking (CLEU) |
-| S12     | 802-844        | Warning system |
-| S13     | 846-954        | Display frame + resize handle |
-| S14     | 956-999        | Row frame pool |
-| S15     | 1001-1044      | Cooldown row frame pool |
-| S16     | 1046-1314      | Display update (healer rows + cooldown rows) |
-| S17     | 1316-1396      | OnUpdate handler + BackgroundFrame |
-| S18     | 1398-1523      | Preview system (mock healers + mock cooldowns) |
-| S19     | 1525-2148      | Options GUI |
-| S20     | 2150-2257      | Event handling |
-| S21     | 2259-2336      | Slash commands + init |
+| S3      | 83-231         | Constants (classes, healing tabs, potions, raid cooldowns, canonical IDs, class/talent mappings) |
+| S4      | 233-285        | State variables |
+| S5      | 287-405        | Utility functions (iteration, colors, measurement, status formatting) |
+| S6      | 407-590        | Healer detection engine (self-spec, inspect results, inspect queue) |
+| S7      | 592-762        | Group scanning + class cooldown seeding |
+| S8      | 764-800        | Mana updating |
+| S9      | 802-849        | Buff/status tracking |
+| S10     | 851-858        | Raid cooldown cleanup (no-op, entries kept for Ready state) |
+| S11     | 860-897        | Potion + raid cooldown tracking (CLEU) |
+| S12     | 899-941        | Warning system |
+| S13     | 943-1058       | Display frame + resize handle (hover-to-show) |
+| S14     | 1060-1105      | Row frame pool |
+| S15     | 1106-1149      | Cooldown row frame pool |
+| S16     | 1150-1432      | Display update (healer rows + cooldown rows with Ready state) |
+| S17     | 1434-1520      | OnUpdate handler + BackgroundFrame |
+| S18     | 1522-1647      | Preview system (mock healers + mock cooldowns) |
+| S19     | 1649-2272      | Options GUI |
+| S20     | 2274-2381      | Event handling |
+| S21     | 2383-2459      | Slash commands + init |
 
 ## Features
 
@@ -56,7 +56,7 @@ HealerMana is a WoW Classic Anniversary Edition addon that tracks healer mana in
 - Dead/DC detection with grey indicators
 - Status indicators: Drinking, Innervate, Mana Tide Totem (with optional durations)
 - Potion cooldown tracking (2min timer from combat log)
-- Raid cooldown tracking: Innervate, Mana Tide, Bloodlust/Heroism, Power Infusion, Divine Intervention, Rebirth, Lay on Hands
+- Raid cooldown tracking with Ready/on-cooldown states: Innervate, Mana Tide, Bloodlust/Heroism, Power Infusion, Divine Intervention, Rebirth, Lay on Hands
 - Average mana across all healers
 - Sort healers by lowest mana or alphabetically
 - Optional chat warnings at configurable thresholds with cooldown
@@ -83,3 +83,4 @@ HealerMana is a WoW Classic Anniversary Edition addon that tracks healer mana in
 - `CombatLogGetCurrentEventInfo()` — potion and raid cooldown tracking
 - `UnitBuff(unit, index)` — buff scanning
 - `GetPlayerInfoByGUID(guid)` — class lookup for cooldown casters
+- `IsSpellKnown(spellId)` — player talent cooldown detection
