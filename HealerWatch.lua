@@ -61,6 +61,7 @@ local DEFAULT_SETTINGS = {
 local band = bit.band;
 local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo;
 local GetPlayerInfoByGUID = GetPlayerInfoByGUID;
+local SendAddonMessage = C_ChatInfo.SendAddonMessage;
 
 --------------------------------------------------------------------------------
 -- Constants
@@ -194,7 +195,7 @@ local RAID_COOLDOWN_SPELLS = {
         duration = 180,
     },
     [SYMBOL_OF_HOPE_SPELL_ID] = {
-        name = "Symbol of Hope",
+        name = SYMBOL_OF_HOPE_SPELL_NAME,
         icon = select(3, GetSpellInfo(SYMBOL_OF_HOPE_SPELL_ID)) or 135982,
         duration = 300,
     },
@@ -471,38 +472,38 @@ local function FormatStatusText(data)
 
     -- Soulstone shown on dead healers (manaPercent == -2)
     if db.showSoulstone and data.hasSoulstone and data.manaPercent == -2 then
-        tinsert(statusLabelParts, format("|cff9482c9%s|r", "Soulstone"));
+        tinsert(statusLabelParts, "|cff9482c9Soulstone|r");
         tinsert(statusDurParts, "");
         tinsert(statusIconParts, { icon = STATUS_ICONS.soulstone, duration = "" });
     end
 
     -- Rebirth shown on dead healers who have a pending battle rez
     if db.showRebirth and data.hasRebirth and data.manaPercent == -2 then
-        tinsert(statusLabelParts, format("|cffff7d0a%s|r", "Rebirth"));
+        tinsert(statusLabelParts, "|cffff7d0aRebirth|r");
         tinsert(statusDurParts, "");
         tinsert(statusIconParts, { icon = STATUS_ICONS.rebirth, duration = "" });
     end
 
     if data.hasInnervate and db.showInnervate then
-        tinsert(statusLabelParts, format("|cffba55d3%s|r", "Innervate"));
+        tinsert(statusLabelParts, "|cffba55d3Innervate|r");
         local dur = FormatDuration(data.innervateExpiry, now);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.innervate, duration = dur });
     end
     if data.hasSymbolOfHope and db.showSymbolOfHope then
-        tinsert(statusLabelParts, format("|cffffff80%s|r", "Symbol of Hope"));
+        tinsert(statusLabelParts, "|cffffff80Symbol of Hope|r");
         local dur = FormatDuration(data.symbolOfHopeExpiry, now);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.symbolOfHope, duration = dur });
     end
     if data.hasManaTide and db.showManaTide then
-        tinsert(statusLabelParts, format("|cff00c8ff%s|r", "Mana Tide"));
+        tinsert(statusLabelParts, "|cff00c8ffMana Tide|r");
         local dur = FormatDuration(data.manaTideExpiry, now);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.manaTide, duration = dur });
     end
     if data.isDrinking and db.showDrinking then
-        tinsert(statusLabelParts, format("|cff55ccff%s|r", "Drinking"));
+        tinsert(statusLabelParts, "|cff55ccffDrinking|r");
         local dur = FormatDuration(data.drinkExpiry, now);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.drinking, duration = dur });
@@ -515,7 +516,7 @@ local function FormatStatusText(data)
         local remaining = floor(data.potionExpiry - now);
         local minutes = floor(remaining / 60);
         local seconds = remaining % 60;
-        tinsert(statusLabelParts, format("|cffffaa00%s|r", "Potion"));
+        tinsert(statusLabelParts, "|cffffaa00Potion|r");
         local dur = format("%d:%02d", minutes, seconds);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.potion, duration = dur });
@@ -586,7 +587,7 @@ end
 local function BroadcastHello()
     if not IsInGroup() then return; end
     local dist = IsInRaid() and "RAID" or "PARTY";
-    C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, "HELLO:" .. ADDON_VERSION, dist);
+    SendAddonMessage(ADDON_MSG_PREFIX, "HELLO:" .. ADDON_VERSION, dist);
     lastHelloTime = GetTime();
 end
 
@@ -664,7 +665,7 @@ local function CheckSelfSpec()
     local primaryRole = nil;
 
     for i = 1, 3 do
-        local ok, specId, name, desc, icon, role, stat, pointsSpent =
+        local ok, _, _, _, _, role, _, pointsSpent =
             pcall(C_SpecializationInfo.GetSpecializationInfo, i, false, false, nil, nil, activeGroup);
         if ok and pointsSpent and pointsSpent > maxPoints then
             maxPoints = pointsSpent;
@@ -717,7 +718,7 @@ local function ProcessInspectResult(inspecteeGUID)
     local primaryRole = nil;
 
     for i = 1, 3 do
-        local ok, specId, name, desc, icon, role, stat, pointsSpent =
+        local ok, _, _, _, _, role, _, pointsSpent =
             pcall(C_SpecializationInfo.GetSpecializationInfo, i, true, false, nil, nil, activeGroup);
         if ok and pointsSpent and pointsSpent > maxPoints then
             maxPoints = pointsSpent;
@@ -1018,10 +1019,32 @@ ScanGroupComposition = function()
         end
         if #syncParts > 0 then
             local dist = IsInRaid() and "RAID" or "PARTY";
-            C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, "SYNC:" .. table.concat(syncParts, ","), dist);
+            SendAddonMessage(ADDON_MSG_PREFIX, "SYNC:" .. table.concat(syncParts, ","), dist);
         end
     end
 
+end
+
+-- Hoisted sort comparators (avoid closure allocation per call)
+local function SortByManaAsc(a, b)
+    return a.manaPercent < b.manaPercent;
+end
+local function SortByNameAsc(a, b)
+    return a.name < b.name;
+end
+local function SortBySpellNameAsc(a, b)
+    return a.spellName < b.spellName;
+end
+local function SortCastersByAvailability(a, b)
+    if a.isDead ~= b.isDead then return not a.isDead; end
+    local now = GetTime();
+    local aReady = (not a.isDead and a.expiryTime <= now);
+    local bReady = (not b.isDead and b.expiryTime <= now);
+    if aReady ~= bReady then return aReady; end
+    if not a.isDead and not b.isDead then
+        return a.expiryTime < b.expiryTime;
+    end
+    return a.name < b.name;
 end
 
 local function GetSortedHealers()
@@ -1033,13 +1056,9 @@ local function GetSortedHealers()
     end
 
     if db.sortBy == "mana" then
-        sort(sortedCache, function(a, b)
-            return a.manaPercent < b.manaPercent;
-        end);
+        sort(sortedCache, SortByManaAsc);
     else
-        sort(sortedCache, function(a, b)
-            return a.name < b.name;
-        end);
+        sort(sortedCache, SortByNameAsc);
     end
 
     return sortedCache;
@@ -1081,26 +1100,13 @@ local function GroupCooldownsBySpell()
         end
     end
 
-    local now = GetTime();
-
     for _, group in pairs(spellGroupCache) do
         -- Sort casters: alive+ready first, then alive+shortest CD, then dead
-        sort(group.casters, function(a, b)
-            if a.isDead ~= b.isDead then return not a.isDead; end
-            local aReady = (not a.isDead and a.expiryTime <= now);
-            local bReady = (not b.isDead and b.expiryTime <= now);
-            if aReady ~= bReady then return aReady; end
-            if not a.isDead and not b.isDead then
-                return a.expiryTime < b.expiryTime;
-            end
-            return a.name < b.name;
-        end);
+        sort(group.casters, SortCastersByAvailability);
         tinsert(sortedSpellGroupCache, group);
     end
 
-    sort(sortedSpellGroupCache, function(a, b)
-        return a.spellName < b.spellName;
-    end);
+    sort(sortedSpellGroupCache, SortBySpellNameAsc);
 
     return sortedSpellGroupCache;
 end
@@ -1225,26 +1231,37 @@ local function ProcessCombatLog()
 
     -- Raid cooldown tracking (SPELL_CAST_SUCCESS for most, SPELL_AURA_APPLIED for soulstone)
     local cdInfo = RAID_COOLDOWN_SPELLS[spellId];
-    if cdInfo and db.showRaidCooldowns then
+    if cdInfo and db.showRaidCooldowns and COOLDOWN_SETTING_KEY[CANONICAL_SPELL_ID[spellId] or spellId] then
+        local now = GetTime();
         if subevent == "SPELL_CAST_SUCCESS" and not SOULSTONE_BUFF_IDS[spellId] then
             if sourceFlags and band(sourceFlags, 0x07) ~= 0 then
                 local _, engClass = GetPlayerInfoByGUID(sourceGUID);
                 local canonical = CANONICAL_SPELL_ID[spellId] or spellId;
                 local key = sourceGUID .. "-" .. canonical;
-                raidCooldowns[key] = {
-                    sourceGUID = sourceGUID,
-                    name = sourceName or "Unknown",
-                    classFile = engClass or "UNKNOWN",
-                    spellId = canonical,
-                    icon = cdInfo.icon,
-                    spellName = cdInfo.name,
-                    expiryTime = GetTime() + cdInfo.duration,
-                    lastCastTime = GetTime(),
-                };
+                local existing = raidCooldowns[key];
+                if existing then
+                    existing.name = sourceName or "Unknown";
+                    existing.classFile = engClass or "UNKNOWN";
+                    existing.icon = cdInfo.icon;
+                    existing.spellName = cdInfo.name;
+                    existing.expiryTime = now + cdInfo.duration;
+                    existing.lastCastTime = now;
+                else
+                    raidCooldowns[key] = {
+                        sourceGUID = sourceGUID,
+                        name = sourceName or "Unknown",
+                        classFile = engClass or "UNKNOWN",
+                        spellId = canonical,
+                        icon = cdInfo.icon,
+                        spellName = cdInfo.name,
+                        expiryTime = now + cdInfo.duration,
+                        lastCastTime = now,
+                    };
+                end
                 -- Broadcast to group if this is the player's own cast
                 if sourceGUID == playerGUID and IsInGroup() then
                     local dist = IsInRaid() and "RAID" or "PARTY";
-                    C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, format("CD:%d:%d", canonical, cdInfo.duration), dist);
+                    SendAddonMessage(ADDON_MSG_PREFIX, format("CD:%d:%d", canonical, cdInfo.duration), dist);
                 end
             end
         elseif subevent == "SPELL_AURA_APPLIED" and SOULSTONE_BUFF_IDS[spellId] then
@@ -1253,20 +1270,30 @@ local function ProcessCombatLog()
                 local _, engClass = GetPlayerInfoByGUID(sourceGUID);
                 local canonical = CANONICAL_SPELL_ID[spellId] or spellId;
                 local key = sourceGUID .. "-" .. canonical;
-                raidCooldowns[key] = {
-                    sourceGUID = sourceGUID,
-                    name = sourceName or "Unknown",
-                    classFile = engClass or "UNKNOWN",
-                    spellId = canonical,
-                    icon = cdInfo.icon,
-                    spellName = cdInfo.name,
-                    expiryTime = GetTime() + cdInfo.duration,
-                    lastCastTime = GetTime(),
-                };
+                local existing = raidCooldowns[key];
+                if existing then
+                    existing.name = sourceName or "Unknown";
+                    existing.classFile = engClass or "UNKNOWN";
+                    existing.icon = cdInfo.icon;
+                    existing.spellName = cdInfo.name;
+                    existing.expiryTime = now + cdInfo.duration;
+                    existing.lastCastTime = now;
+                else
+                    raidCooldowns[key] = {
+                        sourceGUID = sourceGUID,
+                        name = sourceName or "Unknown",
+                        classFile = engClass or "UNKNOWN",
+                        spellId = canonical,
+                        icon = cdInfo.icon,
+                        spellName = cdInfo.name,
+                        expiryTime = now + cdInfo.duration,
+                        lastCastTime = now,
+                    };
+                end
                 -- Broadcast to group if this is the player's own cast
                 if sourceGUID == playerGUID and IsInGroup() then
                     local dist = IsInRaid() and "RAID" or "PARTY";
-                    C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, format("CD:%d:%d", canonical, cdInfo.duration), dist);
+                    SendAddonMessage(ADDON_MSG_PREFIX, format("CD:%d:%d", canonical, cdInfo.duration), dist);
                 end
             end
             -- Mark the healer who received the soulstone
@@ -1322,12 +1349,10 @@ local function CheckManaWarnings()
 
     if warningTriggered then return; end
 
-    if avgMana <= db.warningThreshold then
-        local chatType = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or "SAY");
-        SendChatMessage(format("[HealerWatch] Healer mana low! Average: %d%%", avgMana), chatType);
-        warningTriggered = true;
-        lastWarningTime = now;
-    end
+    local chatType = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or "SAY");
+    SendChatMessage(format("[HealerWatch] Healer mana low! Average: %d%%", avgMana), chatType);
+    warningTriggered = true;
+    lastWarningTime = now;
 end
 
 --------------------------------------------------------------------------------
@@ -1618,6 +1643,17 @@ local function CreateRowFrame()
     frame:SetScript("OnClick", function(self, button)
         if button ~= "LeftButton" or not db or not db.enableCdRequest or not self.healerGUID then return; end
         if GetTime() - menuDismissTime < 0.2 then return; end  -- suppress click-through from menu dismiss
+        -- Dead healer with soulstone/rebirth buff: whisper them to accept it
+        local hdata = healers[self.healerGUID];
+        if hdata and hdata.manaPercent == -2 and (hdata.hasSoulstone or hdata.hasRebirth) then
+            if GetTime() - lastWhisperTime >= WHISPER_COOLDOWN then
+                lastWhisperTime = GetTime();
+                local buffName = hdata.hasSoulstone and "Soulstone" or "Rebirth";
+                local recipient = previewActive and UnitName("player") or self.healerName;
+                SendChatMessage(format("[HealerWatch] Accept your %s!", buffName), "WHISPER", nil, recipient);
+            end
+            return;
+        end
         -- Dead healer without soulstone/rebirth: auto-whisper rebirth druid
         if self.needsRebirth then
             local now = GetTime();
@@ -1796,8 +1832,8 @@ end
 -- Which cooldowns can be requested via click-to-whisper
 local REQUESTABLE_SPELLS = {
     [INNERVATE_SPELL_ID] = { scope = "raid" },
-    [20707] = { scope = "dead" },  -- Soulstone (canonical ID)
-    [20484] = { scope = "dead" },  -- Rebirth (canonical ID)
+    [20707] = { scope = "alive" },  -- Soulstone (canonical ID) — pre-cast on alive targets
+    [20484] = { scope = "dead" },   -- Rebirth (canonical ID)
 };
 
 -- Per-spell behavior when a cooldown row is clicked
@@ -1859,16 +1895,6 @@ local function ScanGroupTargets(filter, threshold, casterGUID)
                             tinsert(results, { name = data.name, guid = guid, classFile = data.classFile,
                                 info = format("%d%% mana", data.manaPercent), sortValue = data.manaPercent });
                         end
-                    elseif filter == "low_health" then
-                        if data.manaPercent >= 0 then
-                            tinsert(results, { name = data.name, guid = guid, classFile = data.classFile,
-                                info = format("%d%% health", data.manaPercent), sortValue = data.manaPercent });
-                        end
-                    elseif filter == "dps_mana" then
-                        if data.classFile == "SHAMAN" then
-                            tinsert(results, { name = data.name, guid = guid, classFile = data.classFile,
-                                info = "DPS" });
-                        end
                     end
                 end
             end
@@ -1884,9 +1910,9 @@ local function ScanGroupTargets(filter, threshold, casterGUID)
                 if filter == "low_mana" then
                     local powerType = UnitPowerType(unit);
                     if powerType == POWER_TYPE_MANA then
-                        local maxPower = UnitPowerMax(unit);
+                        local maxPower = UnitPowerMax(unit, POWER_TYPE_MANA);
                         if maxPower > 0 then
-                            local pct = floor(UnitPower(unit) / maxPower * 100);
+                            local pct = floor(UnitPower(unit, POWER_TYPE_MANA) / maxPower * 100);
                             if pct <= threshold then
                                 tinsert(results, { name = name, guid = guid, classFile = classFile,
                                     info = format("%d%% mana", pct), sortValue = pct });
@@ -1958,8 +1984,14 @@ local function GetEligibleCasters(healerGUID)
         if spellConfig and entry.expiryTime <= now then
             local eligible = false;
             if previewActive then
-                -- Preview mode: show all ready requestable cooldowns for testing
-                eligible = true;
+                -- Preview mode: show ready requestable cooldowns, but respect scope
+                if spellConfig.scope == "dead" then
+                    eligible = (healerData.manaPercent == -2);
+                elseif spellConfig.scope == "alive" then
+                    eligible = (healerData.manaPercent >= 0);
+                else
+                    eligible = true;
+                end
             elseif entry.sourceGUID ~= healerGUID then
                 if spellConfig.scope == "raid" then
                     eligible = (healerData.manaPercent >= 0);
@@ -1970,6 +2002,8 @@ local function GetEligibleCasters(healerGUID)
                     end
                 elseif spellConfig.scope == "dead" then
                     eligible = (healerData.manaPercent == -2);
+                elseif spellConfig.scope == "alive" then
+                    eligible = (healerData.manaPercent >= 0);
                 end
             end
 
@@ -2495,7 +2529,7 @@ do
         overrideBroadcaster = nil;
         if IsInGroup() then
             local dist = IsInRaid() and "RAID" or "PARTY";
-            C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, "OVERRIDE:CLEAR", dist);
+            SendAddonMessage(ADDON_MSG_PREFIX, "OVERRIDE:CLEAR", dist);
         end
         RefreshSyncFrame();
     end);
@@ -2593,7 +2627,7 @@ do
                 overrideBroadcaster = user.name;
                 if IsInGroup() then
                     local dist = IsInRaid() and "RAID" or "PARTY";
-                    C_ChatInfo.SendAddonMessage(ADDON_MSG_PREFIX, "OVERRIDE:" .. user.name, dist);
+                    SendAddonMessage(ADDON_MSG_PREFIX, "OVERRIDE:" .. user.name, dist);
                 end
                 RefreshSyncFrame();
             end);
@@ -3039,7 +3073,8 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
             cdRow.isRequest = false;
             cdRow.requestPulse:Hide();
         else
-            cdRow.timerText:SetText(format("%d:%02d", floor(shortestRemaining / 60), floor(shortestRemaining) % 60));
+            local rem = shortestRemaining or 0;
+            cdRow.timerText:SetText(format("%d:%02d", floor(rem / 60), floor(rem) % 60));
             cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
             cdRow.isRequest = false;
             cdRow.requestPulse:Hide();
@@ -3094,7 +3129,7 @@ local function RefreshHealerDisplay(sortedHealers)
             ar * 255, ag * 255, ab * 255, avgMana);
         HealerWatchFrame.title:Show();
 
-        local titleWidth = MeasureText("Mana: " .. avgMana .. "%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+        local titleWidth = MeasureText("Mana: 100%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
         if titleWidth > totalWidth then totalWidth = titleWidth; end
 
         yOffset = yOffset - rowHeight;
@@ -3240,7 +3275,7 @@ local function RefreshMergedDisplay(sortedHealers)
             ar * 255, ag * 255, ab * 255, avgMana);
         HealerWatchFrame.title:Show();
 
-        local titleWidth = MeasureText("Mana: " .. avgMana .. "%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
+        local titleWidth = MeasureText("Mana: 100%", db.fontSize) + LEFT_MARGIN + RIGHT_MARGIN;
         if titleWidth > totalWidth then totalWidth = titleWidth; end
 
         yOffset = yOffset - rowHeight;
@@ -3454,7 +3489,7 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
             end
             for key, entry in pairs(raidCooldowns) do
                 if entry.expiryTime <= now then
-                    if key == "preview-inn" or key == "preview-rebirth" or key == "preview-ss" or key == "preview-pi" or key == "preview-loh" or key == "preview-tide" or key == "preview-soh" then
+                    if key == "preview-inn" or key == "preview-inn2" or key == "preview-rebirth" or key == "preview-rebirth2" or key == "preview-ss" or key == "preview-ss2" or key == "preview-tide" or key == "preview-soh" then
                         -- Leave expired so they show "Ready" / "Request"
                     else
                         entry.expiryTime = now + RAID_COOLDOWN_SPELLS[entry.spellId].duration;
@@ -3805,7 +3840,7 @@ local function RegisterSettings()
         end);
 
     AddCheckbox("splitFrames", "Separate Cooldown Frame",
-        "Show cooldowns in a separate, independently movable frame.",
+        "Show cooldowns in a separate, independently movable frame. When disabled, cooldowns appear below the healer mana list in a single combined frame.",
         function() RefreshDisplay(); end);
 
     -- Sort dropdown
@@ -3841,10 +3876,10 @@ local function RegisterSettings()
         "Display mana potion cooldown timers.");
 
     AddCheckbox("showRebirth", "Rebirth",
-        "Indicate pending Rebirth on dead healers who have been battle-rezzed.");
+        "Indicate pending Rebirth on dead healers who have been battle-rezzed. Shown as an orange status label or icon on the healer row.");
 
     AddCheckbox("showSoulstone", "Soulstone",
-        "Indicate Soulstone on dead healers who have the buff.");
+        "Indicate Soulstone on dead healers who have the buff. Shown as a purple status label or icon on the healer row.");
 
     AddCheckbox("showSymbolOfHope", "Symbol of Hope",
         "Indicate when a healer is receiving mana from Symbol of Hope.");
@@ -3856,10 +3891,10 @@ local function RegisterSettings()
         "Show spell icons instead of text labels for healer status indicators (Drinking, Innervate, etc.).");
 
     AddCheckbox("showRowHighlight", "Row Hover Highlight",
-        "Highlight rows on mouse hover for visual feedback.");
+        "Highlight rows on mouse hover. Helps identify which row you're about to click when using Click-to-Request.");
 
     AddCheckbox("enableCdRequest", "Click-to-Request Cooldowns",
-        "Click a healer or cooldown row to whisper a caster requesting a cooldown.");
+        "Left-click rows to request cooldowns via whisper.\n\nHealer rows: Alive healers open a menu of available cooldowns (Innervate, Soulstone). Dead healers with a Soulstone or Rebirth buff are whispered to accept it. Dead healers with an amber pulse are matched to the best available Rebirth druid.\n\nCooldown rows: Innervate, Rebirth, and Soulstone open a target selection menu. Mana Tide and Symbol of Hope whisper the caster directly when the amber Request pulse is active.");
 
     -------------------------
     -- Section: Cooldown Tracking
@@ -3867,7 +3902,7 @@ local function RegisterSettings()
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Cooldown Tracking"));
 
     AddCheckbox("showRaidCooldowns", "Enable Cooldown Tracking",
-        "Track group cooldowns with Ready/on-cooldown timers in a dedicated section.");
+        "Track group cooldowns with Ready/on-cooldown timers in a dedicated section.\n\nGreen 'Ready' means at least one caster is alive and off cooldown. An amber 'Request' pulse on Mana Tide or Symbol of Hope means a healer in the caster's subgroup is low on mana — click to whisper them. Grey timers show the shortest remaining cooldown.");
 
     -- AddCheckbox("cdBloodlustHeroism", "Bloodlust / Heroism",  -- disabled for now
     --     "Track Bloodlust and Heroism cooldowns in the cooldown section.");
@@ -4145,18 +4180,18 @@ local function OnEvent(self, event, ...)
         if helloVersion and not isSelf then
             -- Find sender's rank from group
             local senderRank = 0;
-            local senderGUID2;
+            local senderGUID;
             for _, u in ipairs(IterateGroupMembers()) do
                 if UnitName(u) == senderName then
                     senderRank = GetPlayerRank(u);
-                    senderGUID2 = UnitGUID(u);
+                    senderGUID = UnitGUID(u);
                     break;
                 end
             end
             healerWatchUsers[senderName] = {
                 name = senderName,
                 version = helloVersion,
-                guid = senderGUID2,
+                guid = senderGUID,
                 lastSeen = GetTime(),
                 rank = senderRank,
             };

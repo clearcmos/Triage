@@ -18,9 +18,12 @@ Built specifically for **TBC Classic Anniversary**.
 - **Status indicators** - Shows when healers are Drinking, have Innervate, Symbol of Hope, or Mana Tide Totem active, with optional durations. Text or icon display modes.
 - **Potion tracking** - Tracks potion cooldowns (2 min) via combat log
 - **Soulstone indicator** - Purple "SS" on dead healers who have a soulstone
+- **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available and they have no pending rez. Click to auto-whisper the best available druid.
+- **Dead healer accept** - Clicking a dead healer who already has a Soulstone or Rebirth buff whispers them to accept it
 - **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Rebirth, Soulstone, and Symbol of Hope. Shows "Ready" or countdown timer per caster. Each cooldown individually toggleable.
+- **Request pulse** - Amber "Request" glow on Mana Tide and Symbol of Hope rows when an eligible healer in the caster's subgroup has low mana
 - **Cooldown display modes** - Text only, icons only, or icons with labels
-- **Click-to-request cooldowns** - Click a healer row or cooldown row to whisper a request
+- **Click-to-request cooldowns** - Click a healer row or cooldown row to whisper a request. Rebirth targets dead players only; Soulstone targets alive players only
 - **Dead/DC detection** - Grey indicators for dead or disconnected healers
 - **Chat warnings** - Optional automatic warnings to party/raid when healer mana drops below a configurable threshold
 - **Single-broadcaster election** - When multiple players have HealerWatch, only one sends chat warnings. Auto-elected by rank (leader > assist > alphabetical), with manual override via `/hwatch sync`
@@ -45,7 +48,7 @@ Type `/healerwatch` to open the options panel.
 - `/healerwatch sync` - Open broadcaster sync window (see who has HealerWatch and who broadcasts warnings)
 - `/healerwatch reset` - Reset all settings to defaults
 - `/healerwatch help` - Show available commands
-- `/hwatch` - Short alias for all commands above
+- `/hwatch`, `/hw` - Short aliases for all commands above
 
 ---
 
