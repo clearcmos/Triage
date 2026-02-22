@@ -1,8 +1,12 @@
 # Triage
 
-> **Early Release** - This addon is currently experimental and may have bugs. It is being actively developed and improved. If you encounter any issues or have suggestions, please post a comment on the addon page - your feedback helps!
+## Early Release
 
-**Triage** tracks healer mana and raid cooldowns in group content. Automatically detects healers via role assignment and talent inspection, displays color-coded mana bars with status indicators, and monitors key cooldowns like Innervate, Rebirth, Bloodlust, and more with ready/countdown timers.
+This addon is currently experimental and may have bugs. It is being actively developed and improved. If you encounter any issues or have suggestions, please post a comment on the addon page - your feedback helps!
+
+-
+
+**Triage** tracks healer mana and raid cooldowns in group content. It automatically detects healers via talent inspection, displays color-coded mana percentages with status indicators, and monitors key cooldowns like Innervate, Rebirth, and Bloodlust with ready/countdown timers.
 
 Built specifically for **TBC Classic Anniversary**.
 
