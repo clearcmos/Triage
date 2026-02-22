@@ -87,14 +87,6 @@ HealerWatch is a WoW Classic Anniversary Edition addon that tracks healer mana i
 5. Update version in `.toc` and `CHANGELOG.md`
 6. Commit, tag, push to deploy
 
-### New Feature Checklist
-
-When adding any new trackable feature (buff, cooldown, status indicator, etc.), **always** include all three:
-
-1. **Options GUI toggle** — add a `showFeatureName` entry to `DEFAULT_SETTINGS` and a corresponding checkbox in the appropriate section of `RegisterSettings()`. Gate the display logic behind `db.showFeatureName`.
-2. **Preview system coverage** — add mock data to `PREVIEW_DATA` and/or `StartPreview()` so the feature is visible in `/healerwatch test` and the settings panel preview. If the feature has a timer, add it to the OnUpdate preview loop logic.
-3. **Feature list consistency** — update the Features section in both `CLAUDE.md` and `README.md` to mention the new feature.
-
 ## Key APIs Used
 
 - `C_SpecializationInfo.GetSpecializationInfo(i, isInspect, isPet, target, sex, group)` — returns `pointsSpent` per talent tree; `role` field is nil in Classic Anniversary so we fall back to `HEALING_TALENT_TABS` mapping

@@ -1689,6 +1689,14 @@ local function CreateCdRowFrame()
     frame.timerText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall");
     frame.timerText:SetJustifyH("LEFT");
 
+    -- Request pulse overlay (subtle amber glow)
+    local pulse = frame:CreateTexture(nil, "ARTWORK");
+    pulse:SetAllPoints();
+    pulse:SetColorTexture(1.0, 0.7, 0.0, 0);
+    pulse:Hide();
+    frame.requestPulse = pulse;
+    frame.isRequest = false;
+
     -- Icon mode: spell icon texture
     frame.spellIcon = frame:CreateTexture(nil, "OVERLAY");
     frame.spellIcon:SetSize(14, 14);
@@ -1715,6 +1723,8 @@ local function HideAllCdRows()
         activeCdRows[i].expiryTime = nil;
         activeCdRows[i].spellGroup = nil;
         activeCdRows[i].isRequestable = nil;
+        activeCdRows[i].isRequest = false;
+        activeCdRows[i].requestPulse:Hide();
         activeCdRows[i].spellIcon:Hide();
     end
 end
@@ -2908,15 +2918,23 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
             if not useIcons then
                 cdRow.nameText:SetTextColor(0.5, 0.5, 0.5);
             end
+            cdRow.isRequest = false;
+            cdRow.requestPulse:Hide();
         elseif anyReady and anyRequestable then
             cdRow.timerText:SetText("Request");
             cdRow.timerText:SetTextColor(1.0, 0.8, 0.0);
+            cdRow.isRequest = true;
+            cdRow.requestPulse:Show();
         elseif anyReady then
             cdRow.timerText:SetText("Ready");
             cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
+            cdRow.isRequest = false;
+            cdRow.requestPulse:Hide();
         else
             cdRow.timerText:SetText(format("%d:%02d", floor(shortestRemaining / 60), floor(shortestRemaining) % 60));
             cdRow.timerText:SetTextColor(0.8, 0.8, 0.8);
+            cdRow.isRequest = false;
+            cdRow.requestPulse:Hide();
         end
 
         cdRow:SetHeight(rowHeight);
@@ -2935,6 +2953,8 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
         activeCdRows[i].spellId = nil;
         activeCdRows[i].spellGroup = nil;
         activeCdRows[i].isRequestable = nil;
+        activeCdRows[i].isRequest = false;
+        activeCdRows[i].requestPulse:Hide();
     end
 
     return yOffset, totalWidth;
@@ -3340,6 +3360,15 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
         end
 
         RefreshDisplay();
+    end
+
+    -- Request pulse animation (runs every frame for smooth fade)
+    local pulseAlpha = (sin(GetTime() * 180) + 1) * 0.04;  -- 0 to 0.08, ~2s cycle
+    for i = 1, #activeCdRows do
+        local cdRow = activeCdRows[i];
+        if cdRow.isRequest then
+            cdRow.requestPulse:SetAlpha(pulseAlpha);
+        end
     end
 end);
 
