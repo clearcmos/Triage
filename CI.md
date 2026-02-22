@@ -1,4 +1,4 @@
-# Triage - CI/CD Deployment Guide
+# HealerWatch - CI/CD Deployment Guide
 
 This guide explains how to set up automated releases to CurseForge (and optionally WoWInterface/Wago) using GitHub Actions.
 
@@ -42,7 +42,7 @@ The `.pkgmeta` file in the repo root controls packaging behavior (what to includ
 
 ## How to Release
 
-1. **Update your version** in `Triage.toc`:
+1. **Update your version** in `HealerWatch.toc`:
    ```
    ## Version: 1.0.1
    ```

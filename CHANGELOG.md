@@ -15,6 +15,6 @@
 - Split or merged cooldown display with independently movable frames
 - Optional chat warnings at configurable mana threshold
 - Movable, lockable, resizable display frames
-- Full options panel in AddOns tab (ESC > Options > AddOns > Triage)
+- Full options panel in AddOns tab (ESC > Options > AddOns > HealerWatch)
 - Live preview system with animated mock data
 - Works in party, raid, battlegrounds, and arena
