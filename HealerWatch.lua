@@ -828,8 +828,10 @@ local function SeedCooldown(guid, name, classFile, spellId, unit)
 
     local expiryTime = 0;  -- default: "Ready"
 
-    -- For the local player, check actual cooldown state
-    if unit and UnitIsUnit(unit, "player") then
+    -- For the local player, check actual cooldown state.
+    -- Skip Soulstone buff IDs — they are resurrection buff spell IDs, not castable spells.
+    -- GetSpellCooldown on a buff ID returns unreliable data; Soulstone is tracked via CLEU instead.
+    if unit and UnitIsUnit(unit, "player") and not SOULSTONE_BUFF_IDS[spellId] then
         local start, dur = GetSpellCooldown(spellId);
         if start and start > 0 and dur and dur > 1.5 then  -- ignore GCD
             expiryTime = start + dur;
@@ -848,6 +850,18 @@ local function SeedCooldown(guid, name, classFile, spellId, unit)
 end
 
 ScanGroupComposition = function()
+    -- Restore cooldown state saved before last /reload.
+    -- GetTime() is server uptime and does not reset across reloads, so expiryTime values
+    -- remain valid. Expired entries will simply compare <= now and display as Ready.
+    if db and db.savedCooldowns then
+        for key, entry in pairs(db.savedCooldowns) do
+            if not raidCooldowns[key] then
+                raidCooldowns[key] = entry;
+            end
+        end
+        db.savedCooldowns = nil;
+    end
+
     -- Clear inspect queue (will re-queue unresolved members below)
     wipe(inspectQueue);
     -- Don't wipe inspectRetries — preserve progress across roster updates
@@ -1655,21 +1669,49 @@ local function CreateRowFrame()
             end
             return;
         end
-        -- Dead healer without soulstone/rebirth: auto-whisper rebirth druid
+        -- Dead healer without soulstone/rebirth: auto-whisper best rebirth druid
         if self.needsRebirth then
             local now = GetTime();
-            local bestName;
+            -- Collect alive+ready rebirth casters
+            local rebirthCasters = {};
             for _, entry in pairs(raidCooldowns) do
                 if entry.spellId == 20484 and not IsCasterDead(entry.sourceGUID) and entry.expiryTime <= now then
-                    bestName = entry.name;
-                    break;
+                    tinsert(rebirthCasters, entry);
                 end
             end
-            if bestName and GetTime() - lastWhisperTime >= WHISPER_COOLDOWN then
+            if #rebirthCasters == 0 then return; end
+            -- Sort by lastCastTime ascending (longest since last cast = highest priority)
+            sort(rebirthCasters, function(a, b)
+                return (a.lastCastTime or 0) < (b.lastCastTime or 0);
+            end);
+            -- Bear form check: prefer non-bear druid, fall back to bear with caveat
+            local function inBearForm(guid)
+                local units = IterateGroupMembers();
+                for _, unit in ipairs(units) do
+                    if UnitGUID(unit) == guid then
+                        for i = 1, 40 do
+                            local bname, _, _, _, _, _, _, _, _, bsid = UnitBuff(unit, i);
+                            if not bname then break; end
+                            if bsid == 5487 or bsid == 9634 then return true; end
+                        end
+                        return false;
+                    end
+                end
+                return false;
+            end
+            local best, isBear;
+            for _, c in ipairs(rebirthCasters) do
+                if not inBearForm(c.sourceGUID) then
+                    best = c; isBear = false; break;
+                end
+            end
+            if not best then best = rebirthCasters[1]; isBear = true; end
+            if best and GetTime() - lastWhisperTime >= WHISPER_COOLDOWN then
                 lastWhisperTime = GetTime();
                 local deadName = self.healerName or "a healer";
-                local msg = format("[HealerWatch] Can you Rebirth %s?", deadName);
-                local recipient = previewActive and UnitName("player") or bestName;
+                local base = format("[HealerWatch] Can you Rebirth %s?", deadName);
+                local msg = isBear and (base .. " (if safe to leave bear form)") or base;
+                local recipient = previewActive and UnitName("player") or best.name;
                 SendChatMessage(msg, "WHISPER", nil, recipient);
             end
             return;
@@ -1972,6 +2014,9 @@ local MENU_ITEM_HEIGHT = 20;
 local MENU_PADDING = 4;
 local MENU_ICON_SIZE = 16;
 
+-- Returns one entry per requestable spell with the best caster pre-selected.
+-- Bear-form druids are deprioritized for Innervate/Rebirth.
+-- Helpers are defined inside to avoid adding to the main-chunk local variable count.
 local function GetEligibleCasters(healerGUID)
     local results = {};
     local healerData = healers[healerGUID];
@@ -1980,12 +2025,57 @@ local function GetEligibleCasters(healerGUID)
     local healerSubgroup = memberSubgroups[healerGUID];
     local now = GetTime();
 
+    -- Returns true if the druid (by GUID) is currently in bear or dire bear form
+    local function isInBearForm(guid)
+        local units = IterateGroupMembers();
+        for _, unit in ipairs(units) do
+            if UnitGUID(unit) == guid then
+                for i = 1, 40 do
+                    local name, _, _, _, _, _, _, _, _, spellId = UnitBuff(unit, i);
+                    if not name then break; end
+                    if spellId == 5487 or spellId == 9634 then return true; end
+                end
+                return false;
+            end
+        end
+        return false;
+    end
+
+    -- Pick best caster from list: lowest lastCastTime, random if all uncast
+    local function pickBest(casters)
+        if #casters == 0 then return nil; end
+        local allUncast = true;
+        for _, c in ipairs(casters) do
+            if c.lastCastTime > 0 then allUncast = false; break; end
+        end
+        if allUncast then return casters[random(#casters)]; end
+        local best = casters[1];
+        for i = 2, #casters do
+            if casters[i].lastCastTime < best.lastCastTime then best = casters[i]; end
+        end
+        return best;
+    end
+
+    -- For Innervate/Rebirth, prefer non-bear druids; fall back to bear with caveat
+    local function pickBestWithBearCheck(casters, spellId)
+        local bearSensitive = (spellId == INNERVATE_SPELL_ID or spellId == 20484);
+        if not bearSensitive then return pickBest(casters), false; end
+        local nonBears, bears = {}, {};
+        for _, c in ipairs(casters) do
+            if isInBearForm(c.guid) then tinsert(bears, c); else tinsert(nonBears, c); end
+        end
+        if #nonBears > 0 then return pickBest(nonBears), false; end
+        if #bears > 0 then return pickBest(bears), true; end
+        return nil, false;
+    end
+
+    -- Collect eligible casters grouped by spellId
+    local spellGroups = {};
     for _, entry in pairs(raidCooldowns) do
         local spellConfig = REQUESTABLE_SPELLS[entry.spellId];
         if spellConfig and entry.expiryTime <= now then
             local eligible = false;
             if previewActive then
-                -- Preview mode: show ready requestable cooldowns, but respect scope
                 if spellConfig.scope == "dead" then
                     eligible = (healerData.manaPercent == -2);
                 elseif spellConfig.scope == "alive" then
@@ -2009,23 +2099,37 @@ local function GetEligibleCasters(healerGUID)
             end
 
             if eligible then
-                tinsert(results, {
-                    casterName = entry.name,
-                    casterGUID = entry.sourceGUID,
-                    spellName = entry.spellName,
-                    spellId = entry.spellId,
-                    icon = entry.icon,
+                local sid = entry.spellId;
+                if not spellGroups[sid] then
+                    spellGroups[sid] = { spellId = sid, spellName = entry.spellName, icon = entry.icon, casters = {} };
+                end
+                tinsert(spellGroups[sid].casters, {
+                    name = entry.name,
+                    guid = entry.sourceGUID,
                     classFile = entry.classFile,
+                    lastCastTime = entry.lastCastTime or 0,
                 });
             end
         end
     end
 
-    sort(results, function(a, b)
-        if a.spellName == b.spellName then return a.casterName < b.casterName; end
-        return a.spellName < b.spellName;
-    end);
+    -- For each spell, pick best caster (bear-form aware) and build result
+    for _, group in pairs(spellGroups) do
+        local best, isBear = pickBestWithBearCheck(group.casters, group.spellId);
+        if best then
+            tinsert(results, {
+                spellId = group.spellId,
+                spellName = group.spellName,
+                icon = group.icon,
+                casterName = best.name,
+                casterGUID = best.guid,
+                classFile = best.classFile,
+                isBear = isBear,
+            });
+        end
+    end
 
+    sort(results, function(a, b) return a.spellName < b.spellName; end);
     return results;
 end
 
@@ -2144,10 +2248,8 @@ ShowCooldownRequestMenu = function(rowFrame)
             contextMenuFrame.items[i] = item;
         end
 
-        local cr, cg, cb = GetClassColor(entry.classFile);
-        local displayText = format("|cff%02x%02x%02x%s|r - %s",
-            cr * 255, cg * 255, cb * 255, entry.casterName, entry.spellName);
-        item.text:SetText(displayText);
+        -- One item per spell — just show the spell name
+        item.text:SetText(entry.spellName);
         item.icon:SetTexture(entry.icon);
 
         item:ClearAllPoints();
@@ -2159,12 +2261,14 @@ ShowCooldownRequestMenu = function(rowFrame)
         item.spellName = entry.spellName;
         item.healerName = healerName;
         item.manaStr = manaStr;
+        item.isBear = entry.isBear;
 
         item:SetScript("OnMouseUp", function(self, button)
             if button ~= "LeftButton" then return; end
             if GetTime() - lastWhisperTime < WHISPER_COOLDOWN then return; end
             lastWhisperTime = GetTime();
-            local msg = format("[HealerWatch] %s needs %s (%s)", self.healerName, self.spellName, self.manaStr);
+            local base = format("[HealerWatch] %s needs %s (%s)", self.healerName, self.spellName, self.manaStr);
+            local msg = self.isBear and (base .. " - if safe to leave bear form") or base;
             local recipient = previewActive and UnitName("player") or self.casterName;
             SendChatMessage(msg, "WHISPER", nil, recipient);
             HideContextMenu();
@@ -2172,7 +2276,6 @@ ShowCooldownRequestMenu = function(rowFrame)
 
         item:Show();
 
-        -- Measure width
         local textWidth = item.text:GetStringWidth();
         local itemWidth = MENU_PADDING + MENU_ICON_SIZE + 4 + textWidth + MENU_PADDING;
         if itemWidth > maxWidth then maxWidth = itemWidth; end
@@ -2931,7 +3034,7 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
     local cdSpellMax = 0;
     local cdLabelMax = 0;
     local cdFontSize = db.fontSize;
-    local cdTimerMax = MeasureText("Ready", cdFontSize);
+    local cdTimerMax = MeasureText("Request (9)", cdFontSize);
 
     for _, group in ipairs(spellGroups) do
         if not useIcons or useIconLabels then
@@ -3025,12 +3128,14 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
         local allDead = true;
         local anyReady = false;
         local shortestRemaining = nil;
+        local readyCount = 0;
 
         for _, c in ipairs(group.casters) do
             if not c.isDead then
                 allDead = false;
                 if c.expiryTime <= now then
                     anyReady = true;
+                    readyCount = readyCount + 1;
                 else
                     local rem = c.expiryTime - now;
                     if not shortestRemaining or rem < shortestRemaining then
@@ -3064,12 +3169,12 @@ local function RenderCooldownRows(targetFrame, yOffset, totalWidth)
             cdRow.isRequest = false;
             cdRow.requestPulse:Hide();
         elseif anyReady and anyRequestable then
-            cdRow.timerText:SetText("Request");
+            cdRow.timerText:SetText("Request (" .. readyCount .. ")");
             cdRow.timerText:SetTextColor(1.0, 0.8, 0.0);
             cdRow.isRequest = true;
             cdRow.requestPulse:Show();
         elseif anyReady then
-            cdRow.timerText:SetText("Ready");
+            cdRow.timerText:SetText("Ready (" .. readyCount .. ")");
             cdRow.timerText:SetTextColor(0.0, 1.0, 0.0);
             cdRow.isRequest = false;
             cdRow.requestPulse:Hide();
@@ -4114,6 +4219,27 @@ local function OnEvent(self, event, ...)
             BroadcastHello();
         end
 
+    elseif event == "PLAYER_LEAVING_WORLD" then
+        -- Persist cooldown state so /reload doesn't lose timers.
+        -- GetTime() is continuous across reloads so expiryTime values stay valid.
+        if db and next(raidCooldowns) then
+            db.savedCooldowns = {};
+            for key, entry in pairs(raidCooldowns) do
+                db.savedCooldowns[key] = {
+                    sourceGUID = entry.sourceGUID,
+                    name = entry.name,
+                    classFile = entry.classFile,
+                    spellId = entry.spellId,
+                    icon = entry.icon,
+                    spellName = entry.spellName,
+                    expiryTime = entry.expiryTime,
+                    lastCastTime = entry.lastCastTime,
+                };
+            end
+        else
+            db.savedCooldowns = nil;
+        end
+
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
         ScanGroupComposition();
         if IsInGroup() then
@@ -4295,6 +4421,7 @@ EventFrame:RegisterEvent("ADDON_LOADED");
 EventFrame:RegisterEvent("PLAYER_LOGIN");
 EventFrame:RegisterEvent("GROUP_ROSTER_UPDATE");
 EventFrame:RegisterEvent("PLAYER_ENTERING_WORLD");
+EventFrame:RegisterEvent("PLAYER_LEAVING_WORLD");
 EventFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED");
 EventFrame:RegisterEvent("INSPECT_READY");
 EventFrame:RegisterEvent("UNIT_POWER_UPDATE");
