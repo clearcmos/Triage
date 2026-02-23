@@ -22,10 +22,10 @@ Built specifically for **TBC Classic Anniversary**.
 - **Soulstone indicator** - Purple "SS" on dead healers who have a soulstone
 - **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available and they have no pending rez. Click to auto-whisper the best available druid.
 - **Dead healer accept** - Clicking a dead healer who already has a Soulstone or Rebirth buff whispers them to accept it
-- **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Rebirth, Soulstone, and Symbol of Hope. Shows "Ready" or countdown timer per caster. Each cooldown individually toggleable.
+- **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Rebirth, Soulstone, and Symbol of Hope. Shows "Ready (N)" with charge count or countdown timer. Each cooldown individually toggleable. Timers persist across /reload.
 - **Request pulse** - Amber "Request" glow on Mana Tide and Symbol of Hope rows when an eligible healer in the caster's subgroup has low mana
 - **Cooldown display modes** - Text only, icons only, or icons with labels
-- **Click-to-request cooldowns** - Click a healer row or cooldown row to whisper a request. Rebirth targets dead players only; Soulstone targets alive players only
+- **Click-to-request cooldowns** - Click a healer row to see available spells (auto-routes to best caster), or click a cooldown row for target selection. Bear-form druids are deprioritized for Innervate/Rebirth. Rebirth targets dead players only; Soulstone targets alive players only
 - **Dead/DC detection** - Grey indicators for dead or disconnected healers
 - **Chat warnings** - Optional automatic warnings to party/raid when healer mana drops below a configurable threshold
 - **Single-broadcaster election** - When multiple players have HealerWatch, only one sends chat warnings. Auto-elected by rank (leader > assist > alphabetical), with manual override via `/hwatch sync`

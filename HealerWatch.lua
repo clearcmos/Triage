@@ -1231,7 +1231,7 @@ end
 --------------------------------------------------------------------------------
 
 local function ProcessCombatLog()
-    local _, subevent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, spellId, spellName =
+    local _, subevent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, _, _, spellId =
         CombatLogGetCurrentEventInfo();
 
     -- Potion tracking (SPELL_CAST_SUCCESS only)
@@ -3605,7 +3605,6 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
             end
         else
             UpdateManaValues();
-            UpdateAllHealerBuffs();
             CheckManaWarnings();
         end
 
@@ -4526,14 +4525,14 @@ end
 SLASH_HEALERWATCH1 = "/healerwatch";
 SLASH_HEALERWATCH2 = "/hwatch";
 -- Register /hw shorthand only if no other addon has claimed it
-local hwTaken = false
+local hwTaken = false;
 for key, _ in pairs(SlashCmdList) do
-    local i = 1
+    local i = 1;
     while _G["SLASH_" .. key .. i] do
-        if _G["SLASH_" .. key .. i] == "/hw" then hwTaken = true; break end
-        i = i + 1
+        if _G["SLASH_" .. key .. i] == "/hw" then hwTaken = true; break; end
+        i = i + 1;
     end
-    if hwTaken then break end
+    if hwTaken then break; end
 end
 if not hwTaken then
     SLASH_HEALERWATCH3 = "/hw";

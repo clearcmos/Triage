@@ -6,7 +6,7 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 
 ## Architecture
 
-**Single-file addon** — all logic in `HealerWatch.lua` (~4430 lines). No XML, no external dependencies.
+**Single-file addon** — all logic in `HealerWatch.lua` (~4550 lines). No XML, no external dependencies.
 
 ### Key Systems
 
@@ -18,11 +18,11 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 
 2. **Inspection Queue** — async system that queues `NotifyInspect()` calls with 2.5s cooldown, pauses in combat, validates range via `CanInspect()`. Runs on a separate `BackgroundFrame` (always shown) to avoid the hidden-frame OnUpdate deadlock. Periodically re-queues unresolved members.
 
-3. **Raid Cooldown Tracker** — monitors `SPELL_CAST_SUCCESS` (and `SPELL_AURA_APPLIED` for Soulstone) in combat log for key raid cooldowns. Three seeding tiers: class-baseline (Innervate, Rebirth, Soulstone), race-baseline via `RACE_COOLDOWN_SPELLS` (Symbol of Hope for Draenei Priests), and player talent cooldowns (Mana Tide) detected via `IsSpellKnown()`. Local player cooldowns check `GetSpellCooldown()` at seed time for accurate initial state. Multi-rank spells use canonical spell IDs for consistent keys. Displays with class-colored caster names, spell names, and countdown timers (or green "Ready"). Supports text, icon, and icon+label display modes. Cross-zone sync via addon messages (SYNC/CD) shares cooldown states between HealerWatch users. Bloodlust/Heroism and Power Infusion infrastructure exists in `RAID_COOLDOWN_SPELLS` but seeding, settings toggles, and options GUI entries are disabled.
+3. **Raid Cooldown Tracker** — monitors `SPELL_CAST_SUCCESS` (and `SPELL_AURA_APPLIED` for Soulstone) in combat log for key raid cooldowns. Three seeding tiers: class-baseline (Innervate, Rebirth, Soulstone), race-baseline via `RACE_COOLDOWN_SPELLS` (Symbol of Hope for Draenei Priests), and player talent cooldowns (Mana Tide) detected via `IsSpellKnown()`. Local player cooldowns check `GetSpellCooldown()` at seed time for accurate initial state (except Soulstone buff IDs, which are non-castable spells and return unreliable data). Multi-rank spells use canonical spell IDs for consistent keys. Displays with class-colored caster names, spell names, and countdown timers (or green "Ready" with charge count). Supports text, icon, and icon+label display modes. Cross-zone sync via addon messages (SYNC/CD) shares cooldown states between HealerWatch users. Cooldown state is persisted to `db.savedCooldowns` on `PLAYER_LEAVING_WORLD` and restored on next `ScanGroupComposition`, so timers survive `/reload`. Bloodlust/Heroism and Power Infusion infrastructure exists in `RAID_COOLDOWN_SPELLS` but seeding, settings toggles, and options GUI entries are disabled.
 
 4. **Display System** — two independently movable, resizable frames (`HealerWatchFrame` for healer rows, `CooldownFrame` for raid cooldowns) with BackdropTemplate. `splitFrames` setting (default false) controls whether cooldowns render in their own frame or merge into HealerWatchFrame. Persistent pre-created row frames (healer rows parented to HealerWatchFrame; CD rows reparented between HealerWatchFrame and CooldownFrame based on split mode). Resize handles appear on hover, clamped to content-driven minimums. All periodic logic (preview animation, mana updates, display refresh) runs on BackgroundFrame to avoid hidden-frame OnUpdate deadlock. Dead healer rows show an amber pulse when rebirth is available; cooldown rows show an amber "Request" pulse for subgroup-aware spells (Mana Tide, Symbol of Hope) when eligible.
 
-5. **Cooldown Request System** — click-to-whisper system for requesting cooldowns. Clicking an alive healer row opens a context menu listing available cooldowns (Innervate, Soulstone) to whisper a request. Includes target selection submenus, caster priority logic (prefers longest time since last cast), and subgroup-aware mana checks for targeted spells. Dead healers with a Soulstone or Rebirth buff are whispered directly to accept it (no menu). Dead healers without either buff auto-whisper the best available rebirth druid (no menu). Rebirth only appears in menus for dead targets; Soulstone only for alive targets.
+5. **Cooldown Request System** — click-to-whisper system for requesting cooldowns. Clicking an alive healer row opens a context menu with one item per spell (Innervate, Soulstone); clicking auto-routes to the best available caster (longest time since last cast, random if all uncast). Bear-form druids are deprioritized for Innervate/Rebirth — non-bear druids are preferred, with a "if safe to leave bear form" whisper caveat when forced to pick a bear. Includes target selection submenus and subgroup-aware mana checks for targeted spells. Dead healers with a Soulstone or Rebirth buff are whispered directly to accept it (no menu). Dead healers without either buff auto-whisper the best available rebirth druid using the same priority + bear form logic (no menu). Rebirth only appears in menus for dead targets; Soulstone only for alive targets.
 
 6. **Options GUI** — uses the native WoW Settings API (`Settings.RegisterVerticalLayoutCategory` + `Settings.RegisterAddOnCategory`) so options appear in the AddOns tab of the built-in Options panel (ESC > Options > AddOns > HealerWatch). Proxy settings with get/set callbacks to `db`. `/healerwatch` opens directly to the category.
 
@@ -38,39 +38,40 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 | S4      | 271-376        | State variables (incl. cdFrame resize state, context menu, subgroup tracking, forward declarations) |
 | S5      | 378-545        | Utility functions (iteration, colors, measurement, status formatting) |
 | S5b     | 547-616        | Broadcaster election (rank lookup, register, hello, deterministic elect, override) |
-| S6      | 618-812        | Healer detection engine (self-spec, inspect results, inspect queue) |
-| S7      | 815-1112       | Group scanning + class/race cooldown seeding + cross-zone sync + cooldown grouping |
-| S8      | 1114-1151      | Mana updating |
-| S9      | 1153-1212      | Buff/status tracking |
-| S10     | 1214-1328      | Potion + raid cooldown tracking (CLEU) |
-| S11     | 1330-1358      | Warning system |
-| S12     | 1360-1501      | HealerWatch display frame + resize handle |
-| S13     | 1503-1619      | CooldownFrame + resize handle (split mode) |
-| S14     | 1621-1741      | Row frame pool (persistent healer rows, dead pulse overlay) |
-| S15     | 1743-1828      | Cooldown row frame pool (persistent, request pulse overlay) |
-| S16     | 1830-2488      | Cooldown request menu (click-to-whisper, target selection, caster menus, dead healer whisper) |
-| S16b    | 2491-2668      | Sync window (broadcaster election UI, `/hwatch sync`) |
-| S17     | 2670-3411      | Display update (PrepareHealerRowData, RenderHealerRows, RenderCooldownRows, RefreshHealerDisplay, RefreshCooldownDisplay, RefreshMergedDisplay, RefreshDisplay dispatcher) |
-| S18     | 3413-3538      | OnUpdate handler (all logic on BackgroundFrame; heartbeat + stale pruning; pulse animations) |
-| S19     | 3540-3782      | Preview system (mock healers + mock cooldowns + mock group members, both frames) |
-| S20     | 3784-4031      | Options GUI (native Settings API, splitFrames checkbox, per-cooldown toggles) |
-| S21     | 4033-4315      | Event handling (both frame positions restored, broadcaster hello/register on group events, addon message protocol) |
-| S22     | 4317-4430      | Slash commands + init (lock/reset apply to both frames, sync command, /hw alias) |
+| S6      | 618-815        | Healer detection engine (self-spec, inspect results, inspect queue) |
+| S7      | 817-1127       | Group scanning + savedCooldowns restore + class/race cooldown seeding + cross-zone sync + cooldown grouping |
+| S8      | 1130-1167      | Mana updating |
+| S9      | 1169-1228      | Buff/status tracking |
+| S10     | 1230-1343      | Potion + raid cooldown tracking (CLEU) |
+| S11     | 1346-1372      | Warning system |
+| S12     | 1374-1515      | HealerWatch display frame + resize handle |
+| S13     | 1517-1633      | CooldownFrame + resize handle (split mode) |
+| S14     | 1635-1783      | Row frame pool (persistent healer rows, dead pulse overlay, rebirth routing with bear form check) |
+| S15     | 1785-1870      | Cooldown row frame pool (persistent, request pulse overlay) |
+| S16     | 1872-2582      | Cooldown request menu (one-item-per-spell, bear form deprioritization, target selection, dead healer whisper) |
+| S16b    | 2584-2761      | Sync window (broadcaster election UI, `/hwatch sync`) |
+| S17     | 2763-3506      | Display update (PrepareHealerRowData, RenderHealerRows, RenderCooldownRows with readyCount, RefreshHealerDisplay, RefreshCooldownDisplay, RefreshMergedDisplay, RefreshDisplay dispatcher) |
+| S18     | 3508-3633      | OnUpdate handler (all logic on BackgroundFrame; heartbeat + stale pruning; pulse animations) |
+| S19     | 3635-3877      | Preview system (mock healers + mock cooldowns + mock group members, both frames) |
+| S20     | 3879-4126      | Options GUI (native Settings API, splitFrames checkbox, per-cooldown toggles) |
+| S21     | 4128-4432      | Event handling (both frame positions restored, PLAYER_LEAVING_WORLD cooldown persistence, broadcaster hello/register on group events, addon message protocol) |
+| S22     | 4434-4546      | Slash commands + init (lock/reset apply to both frames, sync command, /hw alias) |
 
 ## Features
 
 - Auto-detect healers via talent inspection
 - Color-coded mana display (green/yellow/orange/red with configurable thresholds)
 - Dead/DC detection with grey indicators
-- Dead healer pulse: amber glow on dead healers when a rebirth is available and they have no soulstone/rebirth buff, click to auto-whisper the best rebirth druid
+- Dead healer pulse: amber glow on dead healers when a rebirth is available and they have no soulstone/rebirth buff, click to auto-whisper the best rebirth druid (priority-ordered, bear-form aware)
 - Dead healer click-to-accept: clicking a dead healer with a Soulstone or Rebirth buff whispers them to accept it (no menu)
 - Status indicators: Drinking, Innervate, Mana Tide Totem, Symbol of Hope (text or icon mode, with optional durations)
 - Potion cooldown tracking (2min timer from combat log)
 - Soulstone status indicator on dead healers (purple "SS"/"Soulstone")
-- Raid cooldown tracking with Ready/on-cooldown states: Innervate, Mana Tide, Rebirth, Soulstone, Symbol of Hope (each individually toggleable)
+- Raid cooldown tracking with Ready/on-cooldown states: Innervate, Mana Tide, Rebirth, Soulstone, Symbol of Hope (each individually toggleable). Ready/Request labels show charge count, e.g. "Ready (2)"
+- Cooldown persistence across /reload via SavedVariables (GetTime is continuous across reloads)
 - Request pulse: amber "Request" glow on cooldown rows for subgroup-aware spells (Mana Tide, Symbol of Hope) when an eligible healer in the caster's subgroup has low mana
 - Cooldown display modes: text only, icons only, or icons with labels
-- Click-to-request cooldowns via whisper (healer rows and cooldown rows); Rebirth scoped to dead targets only, Soulstone scoped to alive targets only
+- Click-to-request cooldowns via whisper: healer rows show one menu item per spell (auto-routes to best caster), cooldown rows open caster/target selection. Bear-form druids deprioritized for Innervate/Rebirth. Rebirth scoped to dead targets only, Soulstone scoped to alive targets only
 - Average mana across all healers
 - Sort healers by lowest mana or alphabetically
 - Optional chat warnings at configurable threshold with cooldown
