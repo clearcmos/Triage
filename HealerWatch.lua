@@ -53,6 +53,7 @@ local DEFAULT_SETTINGS = {
     cdRebirth = true,
     cdSoulstone = true,
     cdShadowfiend = false,
+    tooltipAnchor = "left",  -- "left" or "right"; adapts to screen space regardless
 };
 
 --------------------------------------------------------------------------------
@@ -1070,6 +1071,7 @@ local function SortCastersByAvailability(a, b)
     end
     return a.name < b.name;
 end
+-- Sort comparator inlined at call site (cannot hoist to file scope due to 200-local limit)
 
 local function GetSortedHealers()
     wipe(sortedCache);
@@ -1675,6 +1677,7 @@ local function CreateRowFrame()
 
     frame:SetScript("OnEnter", function(self)
         if db and db.showRowHighlight then self.highlight:Show(); end
+        if contextMenuVisible then return; end
         -- Recovery cooldown tooltip
         local guid = self.healerGUID;
         local hdata = guid and healers[guid];
@@ -1774,10 +1777,23 @@ local function CreateRowFrame()
         tip:SetSize(tipW, pad * 2 + count * rowHeight);
         tip:ClearAllPoints();
         local frameLeft = self:GetParent() and self:GetParent():GetLeft() or self:GetLeft();
-        if frameLeft and frameLeft * self:GetEffectiveScale() >= tipW + 8 then
-            tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+        local screenW = GetScreenWidth() * self:GetEffectiveScale();
+        local frameRight = self:GetParent() and self:GetParent():GetRight() or self:GetRight();
+        local spaceLeft = frameLeft and (frameLeft * self:GetEffectiveScale()) or 0;
+        local spaceRight = frameRight and (screenW - frameRight * self:GetEffectiveScale()) or 0;
+        local preferLeft = db.tooltipAnchor == "left";
+        if preferLeft then
+            if spaceLeft >= tipW + 8 then
+                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+            else
+                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            end
         else
-            tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            if spaceRight >= tipW + 8 then
+                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            else
+                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+            end
         end
         tip:Show();
     end);
@@ -1847,6 +1863,7 @@ local function CreateRowFrame()
             end
             return;
         end
+        if self.healerTooltip then self.healerTooltip:Hide(); end
         ShowCooldownRequestMenu(self);
     end);
 
@@ -1931,6 +1948,7 @@ local function CreateCdRowFrame()
 
     frame:SetScript("OnEnter", function(self)
         if db and db.showRowHighlight then self.highlight:Show(); end
+        if contextMenuVisible then return; end
         local group = self.spellGroup;
         if not group or not group.casters or #group.casters == 0 then return; end
         -- Custom tooltip for aligned columns
@@ -2022,10 +2040,23 @@ local function CreateCdRowFrame()
         tip:SetSize(tipW, pad * 2 + #sorted * rowHeight);
         tip:ClearAllPoints();
         local frameLeft = self:GetParent() and self:GetParent():GetLeft() or self:GetLeft();
-        if frameLeft and frameLeft * self:GetEffectiveScale() >= tipW + 8 then
-            tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+        local screenW = GetScreenWidth() * self:GetEffectiveScale();
+        local frameRight = self:GetParent() and self:GetParent():GetRight() or self:GetRight();
+        local spaceLeft = frameLeft and (frameLeft * self:GetEffectiveScale()) or 0;
+        local spaceRight = frameRight and (screenW - frameRight * self:GetEffectiveScale()) or 0;
+        local preferLeft = db.tooltipAnchor == "left";
+        if preferLeft then
+            if spaceLeft >= tipW + 8 then
+                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+            else
+                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            end
         else
-            tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            if spaceRight >= tipW + 8 then
+                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+            else
+                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+            end
         end
         tip:Show();
     end);
@@ -2254,18 +2285,13 @@ local function GetEligibleCasters(healerGUID)
     local healerSubgroup = memberSubgroups[healerGUID];
     local now = GetTime();
 
-    -- Returns true if the druid (by GUID) is currently in bear or dire bear form
     local function isInBearForm(guid)
-        local units = IterateGroupMembers();
-        for _, unit in ipairs(units) do
-            if UnitGUID(unit) == guid then
-                for i = 1, 40 do
-                    local name, _, _, _, _, _, _, _, _, spellId = UnitBuff(unit, i);
-                    if not name then break; end
-                    if spellId == 5487 or spellId == 9634 then return true; end
-                end
-                return false;
-            end
+        local unit = guidToUnit[guid];
+        if not unit then return false; end
+        for i = 1, 40 do
+            local name = UnitBuff(unit, i);
+            if not name then break; end
+            if name == "Dire Bear Form" or name == "Bear Form" then return true; end
         end
         return false;
     end
@@ -2674,10 +2700,12 @@ ShowCdRowRequestMenu = function(cdRow)
     if config.type == "target" then
         local caster = PickBestCaster(group);
         if not caster then return; end
+        if cdRow.cdTooltip then cdRow.cdTooltip:Hide(); end
         ShowTargetSubmenu(caster.name, caster.guid, spellId, group.spellName, group.icon);
         return;
     end
 
+    if cdRow.cdTooltip then cdRow.cdTooltip:Hide(); end
     if not contextMenuFrame then
         contextMenuFrame = CreateContextMenu();
     end
@@ -4213,6 +4241,19 @@ local function RegisterSettings()
     end
     Settings.CreateDropdown(category, sortSetting, GetSortOptions,
         "How to order healers in the display.");
+
+    -- Tooltip anchor dropdown
+    local anchorSetting = Settings.RegisterProxySetting(category,
+        "HEALERWATCH_TOOLTIP_ANCHOR", Settings.VarType.Number, "Tooltip Position",
+        db.tooltipAnchor == "right" and 2 or 1,
+        function() return db.tooltipAnchor == "right" and 2 or 1; end,
+        function(value) db.tooltipAnchor = value == 2 and "right" or "left"; end);
+    Settings.CreateDropdown(category, anchorSetting, function()
+        local container = Settings.CreateControlTextContainer();
+        container:Add(1, "Left of Frame");
+        container:Add(2, "Right of Frame");
+        return container:GetData();
+    end, "Preferred side for tooltips. Automatically flips to the other side if there isn't enough screen space.");
 
     -------------------------
     -- Section: Healer Status Indicators

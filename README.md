@@ -1,10 +1,6 @@
 # HealerWatch
 
-## Early Release
-
-This addon is currently experimental and may have bugs. It is being actively developed and improved. If you encounter any issues or have suggestions, please post a comment on the addon page - your feedback helps!
-
-**HealerWatch** monitors healer mana and raid cooldowns in group content, with click-to-request coordination for cooldowns like Innervate, Rebirth, and Soulstone. It automatically detects healers via talent inspection and displays color-coded mana percentages with status indicators. Highly customizable with a live preview.
+**HealerWatch** tracks healer mana and recovery state in group content. It automatically detects healers via talent inspection and displays color-coded mana percentages with recovery indicators — who's drinking, who has Innervate, whose mana potions are on cooldown. It also tracks the availability of mana recovery cooldowns (Innervate, Mana Tide, Symbol of Hope) and healer resurrection tools (Rebirth, Soulstone), with click-to-request coordination to get help where it's needed.
 
 Built specifically for **TBC Classic Anniversary**.
 
@@ -14,26 +10,38 @@ Built specifically for **TBC Classic Anniversary**.
 
 ## Features
 
+**Healer Mana Monitoring**
 - **Smart healer detection** - Automatically identifies healers by inspecting their talent spec. No manual role assignment needed.
 - **Color-coded mana display** - Shows each healer's mana percentage with color coding (green/yellow/orange/red)
-- **Average mana** - Displays the average mana across all healers at the top
+- **Average mana** - Displays the average mana across all healers in the header
+- **Dead/DC detection** - Grey indicators for dead or disconnected healers
+- **Sorting** - Sort healers by lowest mana first or alphabetically
+
+**Recovery State Tracking**
 - **Status indicators** - Shows when healers are Drinking, have Innervate, Symbol of Hope, or Mana Tide Totem active, with optional durations. Text or icon display modes.
-- **Potion tracking** - Tracks potion cooldowns (2 min) via combat log
-- **Soulstone indicator** - Purple "SS" on dead healers who have a soulstone
-- **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available and they have no pending rez. Click to auto-whisper the best available druid.
-- **Dead healer accept** - Clicking a dead healer who already has a Soulstone or Rebirth buff whispers them to accept it
-- **Raid cooldown tracking** - Monitors Innervate, Mana Tide, Rebirth, Soulstone, and Symbol of Hope. Shows "Ready (N)" with charge count or countdown timer. Each cooldown individually toggleable. Timers persist across /reload.
+- **Potion tracking** - Tracks mana/healing potion cooldowns (2 min) via combat log
+- **Healer tooltips** - Hover a healer row to see their personal recovery cooldown timers (Druids: Innervate, Rebirth; Shamans: Mana Tide; Priests: Shadowfiend, Symbol of Hope)
+- **Soulstone indicator** - Purple status on dead healers who have a soulstone buff
+
+**Recovery Cooldown Availability**
+- **Cooldown tracking** - Shows which mana recovery cooldowns (Innervate, Mana Tide, Symbol of Hope) and healer rez tools (Rebirth, Soulstone) are available across the group. "Ready (N)" with charge count or countdown timer. Each individually toggleable. Timers persist across /reload.
 - **Request pulse** - Amber "Request" glow on Mana Tide and Symbol of Hope rows when an eligible healer in the caster's subgroup has low mana
 - **Cooldown display modes** - Text only, icons only, or icons with labels
-- **Click-to-request cooldowns** - Click a healer row to see available spells (auto-routes to best caster), or click a cooldown row for target selection. Bear-form druids are deprioritized for Innervate/Rebirth. Rebirth targets dead players only; Soulstone targets alive players only
-- **Dead/DC detection** - Grey indicators for dead or disconnected healers
-- **Chat warnings** - Optional automatic warnings to party/raid when healer mana drops below a configurable threshold
-- **Single-broadcaster election** - When multiple players have HealerWatch, only one sends chat warnings. Auto-elected by rank (leader > assist > alphabetical), with manual override via `/hwatch sync`
-- **Cross-zone cooldown sync** - HealerWatch users share cooldown states via addon messages, keeping timers accurate even when group members are in different zones
-- **Sorting** - Sort healers by lowest mana first or alphabetically
-- **Split or merged display** - Raid cooldowns in their own independently movable frame or combined with healer mana
+
+**Click-to-Request Coordination**
+- **Request cooldowns** - Click a healer row to request available spells for them (auto-routes to best caster). Click a cooldown row for caster/target selection. Bear-form druids deprioritized for Innervate/Rebirth.
+- **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available. Click to auto-whisper the best available druid.
+- **Dead healer accept** - Clicking a dead healer who has a Soulstone or Rebirth buff whispers them to accept it
+
+**Group Coordination**
+- **Chat warnings** - Optional automatic warnings to party/raid when average healer mana drops below a configurable threshold
+- **Single-broadcaster election** - When multiple players have HealerWatch, only one sends warnings. Auto-elected by rank, with manual override via `/hwatch sync`
+- **Cross-zone sync** - HealerWatch users share cooldown states via addon messages, keeping timers accurate across zones
+
+**Display & Customization**
+- **Split or merged display** - Recovery cooldowns in their own frame or combined with healer mana
 - **Resizable frames** - Drag the corner handle to resize (appears on hover when unlocked)
-- **Fully configurable** - Options panel with font size, scale, opacity, color thresholds, per-cooldown toggles, and more
+- **Configurable** - Font size, scale, opacity, color thresholds, per-cooldown toggles, and more
 - **Live preview** - See your changes instantly with animated mock data while configuring
 
 ---
@@ -61,6 +69,8 @@ Type `/healerwatch` to open the options panel.
 - Show average mana
 - Sort healers by mana or name
 - Lock frame position
+- Tooltip position (left or right of frame, auto-flips when insufficient space)
+- Separate cooldown frame toggle
 
 **Healer Status Indicators**
 - Show Drinking, Innervate, Mana Tide, Symbol of Hope, Soulstone, Rebirth status
@@ -69,12 +79,11 @@ Type `/healerwatch` to open the options panel.
 - Text or icon status display
 - Click-to-request cooldowns
 
-**Raid Cooldowns**
-- Show/hide raid cooldown section
+**Recovery Cooldowns**
+- Show/hide cooldown tracking section
 - Per-cooldown toggles (Innervate, Mana Tide, Symbol of Hope, Rebirth, Soulstone)
 - Display mode: text, icons, or icons with labels
 - Icon size
-- Split cooldowns into separate frame
 
 **Appearance**
 - Font size
@@ -87,7 +96,6 @@ Type `/healerwatch` to open the options panel.
 - Enable/Disable warning messages
 - Mana threshold percentage
 - Warning cooldown (seconds)
-- Broadcaster status and sync window button (when multiple HealerWatch users are present)
 
 **Mana Color Thresholds**
 - Green, yellow, and orange percentage thresholds
