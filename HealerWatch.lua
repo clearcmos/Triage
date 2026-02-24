@@ -1776,23 +1776,25 @@ local function CreateRowFrame()
         local tipW = statusX + maxStatusW + pad;
         tip:SetSize(tipW, pad * 2 + count * rowHeight);
         tip:ClearAllPoints();
-        local frameLeft = self:GetParent() and self:GetParent():GetLeft() or self:GetLeft();
+        local parent = self:GetParent() or self;
+        local frameLeft = parent:GetLeft() or self:GetLeft();
         local screenW = GetScreenWidth() * self:GetEffectiveScale();
-        local frameRight = self:GetParent() and self:GetParent():GetRight() or self:GetRight();
+        local frameRight = parent:GetRight() or self:GetRight();
         local spaceLeft = frameLeft and (frameLeft * self:GetEffectiveScale()) or 0;
         local spaceRight = frameRight and (screenW - frameRight * self:GetEffectiveScale()) or 0;
+        -- Offsets account for row inset: LEFT_MARGIN(10)+gap(8) left, rightInset(2)+gap(8) right
         local preferLeft = db.tooltipAnchor == "left";
         if preferLeft then
             if spaceLeft >= tipW + 8 then
-                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+                tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
             else
-                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+                tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
             end
         else
             if spaceRight >= tipW + 8 then
-                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+                tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
             else
-                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+                tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
             end
         end
         tip:Show();
@@ -2039,23 +2041,25 @@ local function CreateCdRowFrame()
         local tipW = nameX + maxNameW + pad;
         tip:SetSize(tipW, pad * 2 + #sorted * rowHeight);
         tip:ClearAllPoints();
-        local frameLeft = self:GetParent() and self:GetParent():GetLeft() or self:GetLeft();
+        local parent = self:GetParent() or self;
+        local frameLeft = parent:GetLeft() or self:GetLeft();
         local screenW = GetScreenWidth() * self:GetEffectiveScale();
-        local frameRight = self:GetParent() and self:GetParent():GetRight() or self:GetRight();
+        local frameRight = parent:GetRight() or self:GetRight();
         local spaceLeft = frameLeft and (frameLeft * self:GetEffectiveScale()) or 0;
         local spaceRight = frameRight and (screenW - frameRight * self:GetEffectiveScale()) or 0;
+        -- Offsets account for row inset: LEFT_MARGIN(10)+gap(8) left, rightInset(2)+gap(8) right
         local preferLeft = db.tooltipAnchor == "left";
         if preferLeft then
             if spaceLeft >= tipW + 8 then
-                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+                tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
             else
-                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+                tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
             end
         else
             if spaceRight >= tipW + 8 then
-                tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+                tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
             else
-                tip:SetPoint("RIGHT", self, "LEFT", -8, 0);
+                tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
             end
         end
         tip:Show();
@@ -2286,12 +2290,16 @@ local function GetEligibleCasters(healerGUID)
     local now = GetTime();
 
     local function isInBearForm(guid)
-        local unit = guidToUnit[guid];
-        if not unit then return false; end
-        for i = 1, 40 do
-            local name = UnitBuff(unit, i);
-            if not name then break; end
-            if name == "Dire Bear Form" or name == "Bear Form" then return true; end
+        local units = IterateGroupMembers();
+        for _, unit in ipairs(units) do
+            if UnitGUID(unit) == guid then
+                for i = 1, 40 do
+                    local name = UnitBuff(unit, i);
+                    if not name then break; end
+                    if name == "Dire Bear Form" or name == "Bear Form" then return true; end
+                end
+                return false;
+            end
         end
         return false;
     end
@@ -2515,14 +2523,16 @@ ShowCooldownRequestMenu = function(rowFrame)
         item.casterName = entry.casterName;
         item.spellName = entry.spellName;
         item.healerName = healerName;
-        item.manaStr = manaStr;
+        item.manaStr = (entry.spellId == INNERVATE_SPELL_ID) and manaStr or nil;
         item.isBear = entry.isBear;
 
         item:SetScript("OnMouseUp", function(self, button)
             if button ~= "LeftButton" then return; end
             if GetTime() - lastWhisperTime < WHISPER_COOLDOWN then return; end
             lastWhisperTime = GetTime();
-            local base = format("[HealerWatch] %s needs %s (%s)", self.healerName, self.spellName, self.manaStr);
+            local base = self.manaStr
+                and format("[HealerWatch] %s needs %s (%s)", self.healerName, self.spellName, self.manaStr)
+                or format("[HealerWatch] %s needs %s", self.healerName, self.spellName);
             local msg = self.isBear and (base .. " - if safe to leave bear form") or base;
             local recipient = previewActive and UnitName("player") or self.casterName;
             SendChatMessage(msg, "WHISPER", nil, recipient);
