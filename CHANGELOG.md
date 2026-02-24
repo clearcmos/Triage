@@ -1,3 +1,16 @@
+## v1.2.0
+
+### Added
+- Unconfirmed healer indicator: healers whose spec hasn't been verified via talent inspection are shown dimmed with a "(?) " suffix. Hovering shows a tooltip explaining why and how to resolve it (move closer).
+- Spec broadcasting via addon messages: HealerWatch users broadcast their healer/non-healer status to the group on join and respec, allowing instant cross-zone confirmation without needing inspect proximity.
+- Configurable Innervate request threshold: new slider in Options (under Click-to-Request) controls the mana % below which targets appear in Innervate request menus. Default is 100% (show all mana users). Applies to both healer row and cooldown row click menus.
+
+### Fixed
+- Fresh login phantom cooldowns: `GetSpellCooldown` can return false cooldown data before spell state is initialized on login. Innervate/Rebirth would show incorrect timers. Fixed with a three-layer defense: skip `GetSpellCooldown` during fresh login, discard stale savedCooldowns (GetTime epoch resets on client restart), and delayed 5s re-verification via `C_Timer.After`.
+- Bear form detection in cooldown request routing used English buff names ("Bear Form", "Dire Bear Form") which would fail on non-English clients. Now uses spell IDs consistently across all code paths.
+- Removed duplicate bear form check functions; consolidated into a single shared `IsUnitInBearForm` utility.
+- Removed dead code: `UpdateAllHealerBuffs` and `SortBySpellNameAsc` (defined but never called).
+
 ## v1.1.0
 
 ### Added

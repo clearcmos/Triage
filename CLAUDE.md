@@ -6,14 +6,15 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 
 ## Architecture
 
-**Single-file addon** — all logic in `HealerWatch.lua` (~4840 lines). No XML, no external dependencies.
+**Single-file addon** — all logic in `HealerWatch.lua` (~5000 lines). No XML, no external dependencies.
 
 ### Key Systems
 
 1. **Healer Detection Engine** (layered approach):
    - Layer 1: Class filter — only Priest/Druid/Paladin/Shaman can heal
    - Layer 2: Talent inspection via `C_SpecializationInfo.GetSpecializationInfo()` — checks `role` field first, falls back to `HEALING_TALENT_TABS` mapping when `role` is nil (which is the norm in Classic Anniversary). Tracks `inspectConfirmed` flag per member; only re-queues unconfirmed members.
-   - Layer 3: Provisional display — 5-man assumes healer-capable = healer; raids use `UnitGroupRolesAssigned()` as a hint while waiting for inspect.
+   - Layer 3: Provisional display — 5-man assumes healer-capable = healer (shown dimmed with "(?) " suffix); raids use `UnitGroupRolesAssigned()` as a hint while waiting for inspect. Unconfirmed healers show an explanatory tooltip on hover.
+   - Layer 4: Spec broadcasting — HealerWatch users broadcast their healer status via addon messages (`SPEC:0`/`SPEC:1`) on group join and respec. This provides instant cross-zone confirmation without needing inspect proximity. Talent inspection remains the fallback for non-HealerWatch users.
    - Only queues inspects for visible units (`UnitIsVisible()`); resets retry count when out-of-range so they're re-queued on proximity.
 
 2. **Inspection Queue** — async system that queues `NotifyInspect()` calls with 2.5s cooldown, pauses in combat, validates range via `CanInspect()`. Runs on a separate `BackgroundFrame` (always shown) to avoid the hidden-frame OnUpdate deadlock. Periodically re-queues unresolved members.
@@ -32,34 +33,35 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 
 | Section | Lines (approx) | Description |
 |---------|----------------|-------------|
-| S1      | 1-57           | Header, DEFAULT_SETTINGS (incl. splitFrames, cdFrame* keys, per-cooldown cd* toggles, tooltipAnchor) |
-| S2      | 59-66          | Local references (performance caches: band, CombatLogGetCurrentEventInfo, GetPlayerInfoByGUID, SendAddonMessage) |
-| S3      | 68-279         | Constants (classes, healing tabs, potions, spell IDs, STATUS_ICONS, RAID_COOLDOWN_SPELLS, CANONICAL_SPELL_ID, COOLDOWN_SETTING_KEY, class/talent/race mappings) |
-| S4      | 281-386        | State variables (incl. cdFrame resize state, context menu, subgroup tracking, forward declarations) |
-| S5      | 388-571        | Utility functions (iteration, colors, IsInBearForm, IsCasterDead, measurement, status formatting) |
+| S1      | 1-58           | Header, DEFAULT_SETTINGS (incl. splitFrames, cdFrame* keys, per-cooldown cd* toggles, innervateRequestThreshold, tooltipAnchor) |
+| S2      | 60-67          | Local references (performance caches: band, CombatLogGetCurrentEventInfo, GetPlayerInfoByGUID, SendAddonMessage) |
+| S3      | 69-280         | Constants (classes, healing tabs, potions, spell IDs, STATUS_ICONS, RAID_COOLDOWN_SPELLS, CANONICAL_SPELL_ID, COOLDOWN_SETTING_KEY, class/talent/race mappings) |
+| S4      | 282-387        | State variables (incl. cdFrame resize state, context menu, subgroup tracking, forward declarations) |
+| S5      | 389-571        | Utility functions (iteration, colors, IsUnitInBearForm, IsCasterDead, measurement, status formatting) |
 | S5b     | 573-642        | Broadcaster election (rank lookup, register, hello, deterministic elect, override) |
-| S6      | 644-841        | Healer detection engine (self-spec, inspect results, inspect queue) |
-| S7      | 842-1164       | Group scanning + savedCooldowns restore + class/race cooldown seeding + cross-zone sync + hoisted sort comparators + cooldown grouping |
-| S8      | 1166-1203      | Mana updating |
-| S9      | 1205-1264      | Buff/status tracking |
-| S10     | 1266-1380      | Potion + raid cooldown tracking (CLEU) |
-| S11     | 1382-1415      | Warning system |
-| S12     | 1416-1557      | HealerWatch display frame + resize handle |
-| S13     | 1559-1676      | CooldownFrame + resize handle (split mode) |
-| S14     | 1677-1933      | Row frame pool (persistent healer rows, dead pulse overlay, rebirth routing with bear form check) |
-| S15     | 1934-2132      | Cooldown row frame pool (persistent, request pulse overlay) |
-| S16     | 2133-2831      | Cooldown request menu (one-item-per-spell, bear form deprioritization, target selection, dead healer whisper) |
-| S16b    | 2832-3010      | Sync window (broadcaster election UI, `/hwatch sync`) |
-| S17     | 3011-3755      | Display update (PrepareHealerRowData, RenderHealerRows, RenderCooldownRows with readyCount, RefreshHealerDisplay, RefreshCooldownDisplay, RefreshMergedDisplay, RefreshDisplay dispatcher) |
-| S18     | 3756-3882      | OnUpdate handler (all logic on BackgroundFrame; heartbeat + stale pruning; pulse animations) |
-| S19     | 3883-4146      | Preview system (mock healers + mock cooldowns + mock group members, both frames) |
-| S20     | 4147-4408      | Options GUI (native Settings API, splitFrames checkbox, per-cooldown toggles, tooltipAnchor dropdown) |
-| S21     | 4409-4727      | Event handling (both frame positions restored, PLAYER_LEAVING_WORLD cooldown persistence, broadcaster hello/register on group events, addon message protocol) |
-| S22     | 4727-4840      | Slash commands + init (lock/reset apply to both frames, sync command, /hw alias) |
+| S6      | 644-852        | Healer detection engine (self-spec, BroadcastSpec, inspect results, inspect queue) |
+| S7      | 854-1180       | Group scanning + savedCooldowns restore + class/race cooldown seeding + cross-zone sync + hoisted sort comparators + cooldown grouping |
+| S8      | 1182-1219      | Mana updating |
+| S9      | 1221-1272      | Buff/status tracking |
+| S10     | 1274-1388      | Potion + raid cooldown tracking (CLEU) |
+| S11     | 1390-1422      | Warning system |
+| S12     | 1424-1565      | HealerWatch display frame + resize handle |
+| S13     | 1567-1683      | CooldownFrame + resize handle (split mode) |
+| S14     | 1685-2035      | Row frame pool (persistent healer rows, dead pulse overlay, unconfirmed tooltip, rebirth routing with bear form check) |
+| S15     | 2037-2236      | Cooldown row frame pool (persistent, request pulse overlay) |
+| S16     | 2238-2945      | Cooldown request menu (one-item-per-spell, bear form deprioritization, target selection, dead healer whisper) |
+| S16b    | 2947-3124      | Sync window (broadcaster election UI, `/hwatch sync`) |
+| S17     | 3126-3882      | Display update (PrepareHealerRowData, RenderHealerRows, RenderCooldownRows with readyCount, RefreshHealerDisplay, RefreshCooldownDisplay, RefreshMergedDisplay, RefreshDisplay dispatcher) |
+| S18     | 3884-4009      | OnUpdate handler (all logic on BackgroundFrame; heartbeat + stale pruning; pulse animations) |
+| S19     | 4011-4273      | Preview system (mock healers + mock cooldowns + mock group members, both frames) |
+| S20     | 4275-4541      | Options GUI (native Settings API, splitFrames checkbox, per-cooldown toggles, innervateRequestThreshold slider, tooltipAnchor dropdown) |
+| S21     | 4543-4888      | Event handling (both frame positions restored, PLAYER_LEAVING_WORLD cooldown persistence, broadcaster hello/register on group events, addon message protocol incl. SPEC) |
+| S22     | 4889-5003      | Slash commands + init (lock/reset apply to both frames, sync command, /hw alias) |
 
 ## Features
 
-- Auto-detect healers via talent inspection
+- Auto-detect healers via talent inspection, with spec broadcasting between HealerWatch users for instant cross-zone confirmation
+- Unconfirmed healer indicator: dimmed colors and "(?) " suffix on healers whose spec hasn't been verified yet, with an explanatory tooltip on hover
 - Color-coded mana display (green/yellow/orange/red with configurable thresholds)
 - Dead/DC detection with grey indicators
 - Dead healer pulse: amber glow on dead healers when a rebirth is available and they have no soulstone/rebirth buff, click to auto-whisper the best rebirth druid (priority-ordered, bear-form aware)
@@ -69,11 +71,12 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 - Soulstone status indicator on dead healers (purple "SS"/"Soulstone")
 - Raid cooldown tracking with Ready/on-cooldown states: Innervate, Mana Tide, Rebirth, Soulstone, Symbol of Hope (each individually toggleable). Ready/Request labels show charge count, e.g. "Ready (2)"
 - Healer row tooltips: hovering a healer shows their personal cooldown timers (Druids: Innervate, Rebirth; Shamans: Mana Tide; Priests: Shadowfiend, Symbol of Hope)
+- Cooldown row tooltips: hovering a cooldown row shows all casters for that spell with their individual Ready/timer status
 - Cooldown persistence across /reload via SavedVariables (GetTime is continuous across reloads)
 - Request pulse: amber "Request" glow on cooldown rows for subgroup-aware spells (Mana Tide, Symbol of Hope) when an eligible healer in the caster's subgroup has low mana
 - Cooldown display modes: text only, icons only, or icons with labels
-- Click-to-request cooldowns via whisper: healer rows show one menu item per spell (auto-routes to best caster), cooldown rows open caster/target selection. Bear-form druids deprioritized for Innervate/Rebirth. Rebirth scoped to dead targets only, Soulstone scoped to alive targets only
-- Average mana across all healers
+- Click-to-request cooldowns via whisper: healer rows show one menu item per spell (auto-routes to best caster), cooldown rows open caster/target selection. Bear-form druids deprioritized for Innervate/Rebirth. Rebirth scoped to dead targets only, Soulstone scoped to alive targets only. Innervate request threshold configurable (default 100% — show all mana users)
+- Average mana across all healers in the header row
 - Sort healers by lowest mana or alphabetically
 - Optional chat warnings at configurable threshold with cooldown
 - Single-broadcaster election: when multiple HealerWatch users are in group, only the elected broadcaster sends warnings (leader > assist > alphabetical). Manual override via `/hwatch sync` window.
@@ -106,5 +109,10 @@ HealerWatch is a WoW Classic Anniversary Edition addon that monitors healer mana
 - `GetPlayerInfoByGUID(guid)` — class lookup for cooldown casters
 - `IsSpellKnown(spellId)` — player talent cooldown detection
 - `Settings.RegisterVerticalLayoutCategory()` / `Settings.RegisterAddOnCategory()` / `Settings.RegisterProxySetting()` / `Settings.OpenToCategory()` — native options panel
-- `C_ChatInfo.SendAddonMessage()` / `C_ChatInfo.RegisterAddonMessagePrefix()` — addon-to-addon communication (cooldown sync + broadcaster election)
+- `GetSpellCooldown(spellId)` — local player cooldown state at seed time
+- `CanInspect(unit)` / `CheckInteractDistance(unit, 4)` — inspect range validation
+- `SendChatMessage(msg, chatType, lang, target)` — whisper requests and chat warnings
+- `C_ChatInfo.SendAddonMessage()` / `C_ChatInfo.RegisterAddonMessagePrefix()` — addon-to-addon communication (cooldown sync, broadcaster election, spec broadcasting)
+- `Ambiguate(name, context)` — cross-realm name normalization for addon messages
+- `C_Timer.After(delay, fn)` — delayed callback for fresh login cooldown verification
 - `C_AddOns.GetAddOnMetadata()` / `GetAddOnMetadata()` — addon version retrieval for broadcaster protocol

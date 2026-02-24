@@ -44,6 +44,7 @@ local DEFAULT_SETTINGS = {
     iconSize = 16,
     showRowHighlight = true,
     enableCdRequest = true,
+    innervateRequestThreshold = 100,
     headerBackground = true,
     cdInnervate = true,
     cdManaTide = true,
@@ -300,6 +301,7 @@ local INSPECT_REQUEUE_INTERVAL = 5.0;
 -- Addon communication for cross-zone cooldown sync
 local ADDON_MSG_PREFIX = "HealerWatch";
 local playerGUID;
+local isFreshLogin = false;  -- true during fresh login (not /reload), cleared after delayed CD verify
 
 -- Broadcaster election system
 local ADDON_VERSION = C_AddOns and C_AddOns.GetAddOnMetadata(addonName, "Version") or
@@ -347,8 +349,7 @@ local contextMenuVisible = false;
 -- Cooldown frame state
 local cdContentMinWidth = 120;
 local cdContentMinHeight = 30;
-local cdResizeDragging = false;
-local cdResizeStartCursorX, cdResizeStartCursorY, cdResizeStartW, cdResizeStartH;
+local cdResizeState = { dragging = false, cursorX = nil, cursorY = nil, w = nil, h = nil };
 
 -- Warning state
 local lastWarningTime = 0;
@@ -445,6 +446,21 @@ local function IsCasterDead(guid)
     for _, u in ipairs(IterateGroupMembers()) do
         if UnitGUID(u) == guid then
             return UnitIsDeadOrGhost(u);
+        end
+    end
+    return false;
+end
+
+local function IsUnitInBearForm(guid)
+    local units = IterateGroupMembers();
+    for _, unit in ipairs(units) do
+        if UnitGUID(unit) == guid then
+            for i = 1, 40 do
+                local bname, _, _, _, _, _, _, _, _, bsid = UnitBuff(unit, i);
+                if not bname then break; end
+                if bsid == 5487 or bsid == 9634 then return true; end
+            end
+            return false;
         end
     end
     return false;
@@ -699,6 +715,18 @@ local function CheckSelfSpec()
     end
 end
 
+-- Broadcast own spec to other HealerWatch users via addon message
+local function BroadcastSpec()
+    if not IsInGroup() then return; end
+    local guid = UnitGUID("player");
+    if not guid or not healers[guid] then return; end
+    local data = healers[guid];
+    if not data.inspectConfirmed then return; end
+    local isHealer = data.isHealer and "1" or "0";
+    local dist = IsInRaid() and "RAID" or "PARTY";
+    SendAddonMessage(ADDON_MSG_PREFIX, "SPEC:" .. isHealer, dist);
+end
+
 local function ProcessInspectResult(inspecteeGUID)
     if inspectPending ~= inspecteeGUID then return; end
 
@@ -831,7 +859,12 @@ end
 local function SeedCooldown(guid, name, classFile, spellId, unit)
     local canonical = CANONICAL_SPELL_ID[spellId] or spellId;
     local key = guid .. "-" .. canonical;
-    if raidCooldowns[key] then return; end
+    local isLocalPlayer = unit and UnitIsUnit(unit, "player");
+
+    -- For non-local players, don't overwrite existing entries (may have CLEU/sync data).
+    -- For local player, always re-seed so GetSpellCooldown overrides stale savedCooldowns
+    -- (savedCooldowns use GetTime()-based expiryTimes that become invalid across client restarts).
+    if raidCooldowns[key] and not isLocalPlayer then return; end
 
     local cdInfo = RAID_COOLDOWN_SPELLS[spellId];
     if not cdInfo then return; end
@@ -839,9 +872,10 @@ local function SeedCooldown(guid, name, classFile, spellId, unit)
     local expiryTime = 0;  -- default: "Ready"
 
     -- For the local player, check actual cooldown state.
-    -- Skip Soulstone buff IDs — they are resurrection buff spell IDs, not castable spells.
-    -- GetSpellCooldown on a buff ID returns unreliable data; Soulstone is tracked via CLEU instead.
-    if unit and UnitIsUnit(unit, "player") and not SOULSTONE_BUFF_IDS[spellId] then
+    -- Skip on fresh login — GetSpellCooldown can return phantom cooldowns before spell data
+    -- is fully synced from the server. A delayed re-verification runs after login stabilizes.
+    -- Skip Soulstone buff IDs — they are non-castable spell IDs with unreliable CD data.
+    if isLocalPlayer and not isFreshLogin and not SOULSTONE_BUFF_IDS[spellId] then
         local start, dur = GetSpellCooldown(spellId);
         if start and start > 0 and dur and dur > 1.5 then  -- ignore GCD
             expiryTime = start + dur;
@@ -861,16 +895,16 @@ end
 
 ScanGroupComposition = function()
     -- Restore cooldown state saved before last /reload.
-    -- GetTime() is server uptime and does not reset across reloads, so expiryTime values
-    -- remain valid. Expired entries will simply compare <= now and display as Ready.
-    if db and db.savedCooldowns then
+    -- GetTime() is continuous across reloads so expiryTime values remain valid.
+    -- On fresh login (client restart), GetTime() resets so saved values are invalid — discard.
+    if db and db.savedCooldowns and not isFreshLogin then
         for key, entry in pairs(db.savedCooldowns) do
             if not raidCooldowns[key] then
                 raidCooldowns[key] = entry;
             end
         end
-        db.savedCooldowns = nil;
     end
+    db.savedCooldowns = nil;
 
     -- Clear inspect queue (will re-queue unresolved members below)
     wipe(inspectQueue);
@@ -932,6 +966,7 @@ ScanGroupComposition = function()
                 -- Self: check directly, others: queue inspect
                 if UnitIsUnit(unit, "player") then
                     CheckSelfSpec();
+                    BroadcastSpec();
                 else
                     -- Provisional display while waiting for talent inspect:
                     -- 5-man: assume healer-capable = healer
@@ -1056,9 +1091,6 @@ local function SortByManaAsc(a, b)
 end
 local function SortByNameAsc(a, b)
     return a.name < b.name;
-end
-local function SortBySpellNameAsc(a, b)
-    return a.spellName < b.spellName;
 end
 local function SortCastersByAvailability(a, b)
     if a.isDead ~= b.isDead then return not a.isDead; end
@@ -1239,20 +1271,12 @@ local function UpdateUnitBuffs(unit)
     end
 end
 
-local function UpdateAllHealerBuffs()
-    for guid, data in pairs(healers) do
-        if data.isHealer and data.unit and UnitExists(data.unit) then
-            UpdateUnitBuffs(data.unit);
-        end
-    end
-end
-
 --------------------------------------------------------------------------------
 -- Potion Tracking via Combat Log
 --------------------------------------------------------------------------------
 
 local function ProcessCombatLog()
-    local _, subevent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, _, _, spellId =
+    local _, subevent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, _, _, _, spellId =
         CombatLogGetCurrentEventInfo();
 
     -- Potion tracking (SPELL_CAST_SUCCESS only)
@@ -1606,19 +1630,19 @@ CooldownFrame.resizeHandle = cdResizeHandle;
 
 cdResizeHandle:SetScript("OnMouseDown", function(self, button)
     if button ~= "LeftButton" then return; end
-    cdResizeDragging = true;
+    cdResizeState.dragging = true;
     self.tex:SetVertexColor(1, 1, 1);
     local effectiveScale = CooldownFrame:GetEffectiveScale();
-    cdResizeStartCursorX, cdResizeStartCursorY = GetCursorPosition();
-    cdResizeStartW = CooldownFrame:GetWidth();
-    cdResizeStartH = CooldownFrame:GetHeight();
+    cdResizeState.cursorX, cdResizeState.cursorY = GetCursorPosition();
+    cdResizeState.w = CooldownFrame:GetWidth();
+    cdResizeState.h = CooldownFrame:GetHeight();
 
     self:SetScript("OnUpdate", function()
         local cursorX, cursorY = GetCursorPosition();
-        local dx = (cursorX - cdResizeStartCursorX) / effectiveScale;
-        local dy = (cdResizeStartCursorY - cursorY) / effectiveScale;
-        local newW = max(cdContentMinWidth, min(WIDTH_MAX, cdResizeStartW + dx));
-        local newH = max(cdContentMinHeight, min(HEIGHT_MAX, cdResizeStartH + dy));
+        local dx = (cursorX - cdResizeState.cursorX) / effectiveScale;
+        local dy = (cdResizeState.cursorY - cursorY) / effectiveScale;
+        local newW = max(cdContentMinWidth, min(WIDTH_MAX, cdResizeState.w + dx));
+        local newH = max(cdContentMinHeight, min(HEIGHT_MAX, cdResizeState.h + dy));
         db.cdFrameWidth = floor(newW + 0.5);
         db.cdFrameHeight = floor(newH + 0.5);
         CooldownFrame:SetWidth(db.cdFrameWidth);
@@ -1627,19 +1651,19 @@ cdResizeHandle:SetScript("OnMouseDown", function(self, button)
 end);
 
 cdResizeHandle:SetScript("OnMouseUp", function(self)
-    cdResizeDragging = false;
+    cdResizeState.dragging = false;
     self.tex:SetVertexColor(0.6, 0.6, 0.6);
     self:SetScript("OnUpdate", nil);
 end);
 
 UpdateCdResizeHandleVisibility = function()
     if db and db.locked then
-        if not cdResizeDragging then
+        if not cdResizeState.dragging then
             cdResizeHandle:Hide();
         end
         return;
     end
-    if cdResizeDragging then return; end
+    if cdResizeState.dragging then return; end
     if CooldownFrame:IsMouseOver() or cdResizeHandle:IsMouseOver() then
         cdResizeHandle:Show();
     else
@@ -1650,11 +1674,11 @@ end
 CooldownFrame:HookScript("OnEnter", function() UpdateCdResizeHandleVisibility(); end);
 CooldownFrame:HookScript("OnLeave", function() UpdateCdResizeHandleVisibility(); end);
 cdResizeHandle:SetScript("OnEnter", function()
-    if not cdResizeDragging then cdResizeHandle.tex:SetVertexColor(1, 1, 1); end
+    if not cdResizeState.dragging then cdResizeHandle.tex:SetVertexColor(1, 1, 1); end
     UpdateCdResizeHandleVisibility();
 end);
 cdResizeHandle:SetScript("OnLeave", function()
-    if not cdResizeDragging then cdResizeHandle.tex:SetVertexColor(0.6, 0.6, 0.6); end
+    if not cdResizeState.dragging then cdResizeHandle.tex:SetVertexColor(0.6, 0.6, 0.6); end
     UpdateCdResizeHandleVisibility();
 end);
 
@@ -1682,6 +1706,99 @@ local function CreateRowFrame()
         local guid = self.healerGUID;
         local hdata = guid and healers[guid];
         if not hdata then return; end
+        -- Unconfirmed healer: show explanatory tooltip instead of cooldown tooltip
+        if not hdata.inspectConfirmed then
+            if not self.healerTooltip then
+                local tip = CreateFrame("Frame", nil, UIParent, "BackdropTemplate");
+                tip:SetFrameStrata("TOOLTIP");
+                tip:SetFrameLevel(200);
+                tip:SetBackdrop({
+                    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+                    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                    tile = true, tileSize = 16, edgeSize = 12,
+                    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+                });
+                tip:SetBackdropColor(0, 0, 0, 0.9);
+                tip:SetBackdropBorderColor(0.6, 0.6, 0.6, 0.8);
+                tip:SetClampedToScreen(true);
+                tip:Hide();
+                tip.rows = {};
+                self.healerTooltip = tip;
+            end
+            local tip = self.healerTooltip;
+            local fontSize = 12;
+            local rowHeight = fontSize + 4;
+            local pad = 6;
+            -- Ensure we have enough FontStrings for 3 lines
+            for i = 1, 3 do
+                if not tip.rows[i] then
+                    tip.rows[i] = {};
+                    tip.rows[i].spell = tip:CreateFontString(nil, "OVERLAY");
+                    tip.rows[i].spell:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    tip.rows[i].spell:SetJustifyH("LEFT");
+                    tip.rows[i].status = tip:CreateFontString(nil, "OVERLAY");
+                    tip.rows[i].status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    tip.rows[i].status:SetJustifyH("LEFT");
+                end
+            end
+            -- Line 1: healer name in class color
+            local cr, cg, cb = GetClassColor(hdata.classFile);
+            tip.rows[1].spell:SetText(hdata.name);
+            tip.rows[1].spell:SetTextColor(cr, cg, cb);
+            tip.rows[1].spell:ClearAllPoints();
+            tip.rows[1].spell:SetPoint("TOPLEFT", tip, "TOPLEFT", pad, -pad);
+            tip.rows[1].spell:Show();
+            tip.rows[1].status:Hide();
+            -- Line 2: "Spec Unconfirmed"
+            tip.rows[2].spell:SetText("Spec Unconfirmed");
+            tip.rows[2].spell:SetTextColor(0.7, 0.7, 0.7);
+            tip.rows[2].spell:ClearAllPoints();
+            tip.rows[2].spell:SetPoint("TOPLEFT", tip, "TOPLEFT", pad, -pad - rowHeight);
+            tip.rows[2].spell:Show();
+            tip.rows[2].status:Hide();
+            -- Line 3: explanation
+            tip.rows[3].spell:SetText("Move closer to inspect talents.");
+            tip.rows[3].spell:SetTextColor(0.5, 0.5, 0.5);
+            tip.rows[3].spell:ClearAllPoints();
+            tip.rows[3].spell:SetPoint("TOPLEFT", tip, "TOPLEFT", pad, -pad - rowHeight * 2);
+            tip.rows[3].spell:Show();
+            tip.rows[3].status:Hide();
+            -- Hide any extra rows from previous cooldown tooltip use
+            for i = 4, #tip.rows do
+                tip.rows[i].spell:Hide();
+                tip.rows[i].status:Hide();
+            end
+            -- Size and position
+            local maxW = 0;
+            for i = 1, 3 do
+                local w = tip.rows[i].spell:GetStringWidth();
+                if w > maxW then maxW = w; end
+            end
+            tip:SetSize(maxW + pad * 2, pad * 2 + 3 * rowHeight);
+            tip:ClearAllPoints();
+            local parent = self:GetParent() or self;
+            local frameLeft = parent:GetLeft() or self:GetLeft();
+            local screenW = GetScreenWidth() * self:GetEffectiveScale();
+            local frameRight = parent:GetRight() or self:GetRight();
+            local spaceLeft = frameLeft and (frameLeft * self:GetEffectiveScale()) or 0;
+            local spaceRight = frameRight and (screenW - frameRight * self:GetEffectiveScale()) or 0;
+            local preferLeft = db.tooltipAnchor == "left";
+            if preferLeft then
+                if spaceLeft >= (maxW + pad * 2) + 8 then
+                    tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
+                else
+                    tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
+                end
+            else
+                if spaceRight >= (maxW + pad * 2) + 8 then
+                    tip:SetPoint("LEFT", self, "RIGHT", 10, 0);
+                else
+                    tip:SetPoint("RIGHT", self, "LEFT", -18, 0);
+                end
+            end
+            tip:Show();
+            return;
+        end
         -- Build spell list per class (inline to avoid file-scope local)
         local cls = hdata.classFile;
         local tooltipSpells;
@@ -1834,23 +1951,9 @@ local function CreateRowFrame()
                 return (a.lastCastTime or 0) < (b.lastCastTime or 0);
             end);
             -- Bear form check: prefer non-bear druid, fall back to bear with caveat
-            local function inBearForm(guid)
-                local units = IterateGroupMembers();
-                for _, unit in ipairs(units) do
-                    if UnitGUID(unit) == guid then
-                        for i = 1, 40 do
-                            local bname, _, _, _, _, _, _, _, _, bsid = UnitBuff(unit, i);
-                            if not bname then break; end
-                            if bsid == 5487 or bsid == 9634 then return true; end
-                        end
-                        return false;
-                    end
-                end
-                return false;
-            end
             local best, isBear;
             for _, c in ipairs(rebirthCasters) do
-                if not inBearForm(c.sourceGUID) then
+                if not IsUnitInBearForm(c.sourceGUID) then
                     best = c; isBear = false; break;
                 end
             end
@@ -2289,21 +2392,6 @@ local function GetEligibleCasters(healerGUID)
     local healerSubgroup = memberSubgroups[healerGUID];
     local now = GetTime();
 
-    local function isInBearForm(guid)
-        local units = IterateGroupMembers();
-        for _, unit in ipairs(units) do
-            if UnitGUID(unit) == guid then
-                for i = 1, 40 do
-                    local name = UnitBuff(unit, i);
-                    if not name then break; end
-                    if name == "Dire Bear Form" or name == "Bear Form" then return true; end
-                end
-                return false;
-            end
-        end
-        return false;
-    end
-
     -- Pick best caster from list: lowest lastCastTime, random if all uncast
     local function pickBest(casters)
         if #casters == 0 then return nil; end
@@ -2325,7 +2413,7 @@ local function GetEligibleCasters(healerGUID)
         if not bearSensitive then return pickBest(casters), false; end
         local nonBears, bears = {}, {};
         for _, c in ipairs(casters) do
-            if isInBearForm(c.guid) then tinsert(bears, c); else tinsert(nonBears, c); end
+            if IsUnitInBearForm(c.guid) then tinsert(bears, c); else tinsert(nonBears, c); end
         end
         if #nonBears > 0 then return pickBest(nonBears), false; end
         if #bears > 0 then return pickBest(bears), true; end
@@ -2349,6 +2437,10 @@ local function GetEligibleCasters(healerGUID)
             elseif entry.sourceGUID ~= healerGUID then
                 if spellConfig.scope == "raid" then
                     eligible = (healerData.manaPercent >= 0);
+                    -- Apply Innervate threshold: only show if healer mana is at or below the configured threshold
+                    if eligible and entry.spellId == INNERVATE_SPELL_ID and db then
+                        eligible = (healerData.manaPercent <= db.innervateRequestThreshold);
+                    end
                 elseif spellConfig.scope == "subgroup" then
                     if healerData.manaPercent >= 0 then
                         local casterSubgroup = memberSubgroups[entry.sourceGUID];
@@ -2568,7 +2660,11 @@ ShowTargetSubmenu = function(casterName, casterGUID, spellId, spellName, spellIc
     local config = CD_REQUEST_CONFIG[spellId];
     if not config or config.type ~= "target" then return; end
 
-    local targets = ScanGroupTargets(config.filter, config.threshold or 20, casterGUID);
+    local threshold = config.threshold or 20;
+    if spellId == INNERVATE_SPELL_ID and db then
+        threshold = db.innervateRequestThreshold;
+    end
+    local targets = ScanGroupTargets(config.filter, threshold, casterGUID);
     if #targets == 0 then
         HideContextMenu();
         return;
@@ -3065,7 +3161,11 @@ local function PrepareHealerRowData(sortedHealers)
 
         local statusLabel, statusDur, iconData = FormatStatusText(data);
 
-        local nw = MeasureText(data.name, db.fontSize);
+        local displayName = data.name;
+        if not data.inspectConfirmed then
+            displayName = data.name .. " (?)";
+        end
+        local nw = MeasureText(displayName, db.fontSize);
         if nw > maxNameWidth then maxNameWidth = nw; end
 
         -- Deep-copy iconData since statusIconParts is reused per call
@@ -3189,12 +3289,21 @@ local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, 
         row.manaText:SetPoint("LEFT", row.nameText, "RIGHT", 0, 0);
 
         local cr, cg, cb = GetClassColor(data.classFile);
-        row.nameText:SetText(data.name);
-        row.nameText:SetTextColor(cr, cg, cb);
+        if not data.inspectConfirmed then
+            row.nameText:SetText(data.name .. " |cff888888(?)|r");
+            row.nameText:SetTextColor(cr * 0.5, cg * 0.5, cb * 0.5);
+        else
+            row.nameText:SetText(data.name);
+            row.nameText:SetTextColor(cr, cg, cb);
+        end
 
         if data.manaPercent == -2 or data.manaPercent == -1 then
             row.manaText:SetText(rd.manaStr);
             row.manaText:SetTextColor(0.5, 0.5, 0.5);
+        elseif not data.inspectConfirmed then
+            row.manaText:SetText(rd.manaStr);
+            local mr, mg, mb = GetManaColor(data.manaPercent);
+            row.manaText:SetTextColor(mr * 0.5, mg * 0.5, mb * 0.5);
         else
             row.manaText:SetText(rd.manaStr);
             local mr, mg, mb = GetManaColor(data.manaPercent);
@@ -4300,8 +4409,14 @@ local function RegisterSettings()
     AddCheckbox("showRowHighlight", "Row Hover Highlight",
         "Highlight rows on mouse hover. Helps identify which row you're about to click when using Click-to-Request.");
 
-    AddCheckbox("enableCdRequest", "Click-to-Request Cooldowns",
+    local cdReqInit = AddCheckbox("enableCdRequest", "Click-to-Request Cooldowns",
         "Left-click rows to request cooldowns via whisper.\n\nHealer rows: Alive healers open a menu of available cooldowns (Innervate, Soulstone). Dead healers with a Soulstone or Rebirth buff are whispered to accept it. Dead healers with an amber pulse are matched to the best available Rebirth druid.\n\nCooldown rows: Innervate, Rebirth, and Soulstone open a target selection menu. Mana Tide and Symbol of Hope whisper the caster directly when the amber Request pulse is active.");
+
+    local innThreshInit = AddSlider("innervateRequestThreshold", "Innervate Target Threshold (%)",
+        "When clicking an Innervate cooldown row, only show targets at or below this mana percentage. Set to 100 to always show all mana users.",
+        0, 100, 5);
+    innThreshInit:SetParentInitializer(cdReqInit,
+        function() return db.enableCdRequest; end);
 
     -------------------------
     -- Section: Cooldown Tracking
@@ -4513,11 +4628,27 @@ local function OnEvent(self, event, ...)
 
     elseif event == "PLAYER_LOGIN" then
         playerGUID = UnitGUID("player");
+        isFreshLogin = true;  -- GetSpellCooldown unreliable shortly after login
         RegisterSelf();
         if IsInGroup() then
             ScanGroupComposition();
             BroadcastHello();
         end
+        -- After spell data stabilizes, re-verify local player cooldowns via GetSpellCooldown
+        C_Timer.After(5, function()
+            isFreshLogin = false;
+            if not playerGUID or not IsInGroup() then return; end
+            for key, entry in pairs(raidCooldowns) do
+                if entry.sourceGUID == playerGUID and not SOULSTONE_BUFF_IDS[entry.spellId] then
+                    local start, dur = GetSpellCooldown(entry.spellId);
+                    if start and start > 0 and dur and dur > 1.5 then
+                        entry.expiryTime = start + dur;
+                    else
+                        entry.expiryTime = 0;
+                    end
+                end
+            end
+        end);
 
     elseif event == "PLAYER_LEAVING_WORLD" then
         -- Persist cooldown state so /reload doesn't lose timers.
@@ -4558,6 +4689,7 @@ local function OnEvent(self, event, ...)
         if guid and healers[guid] then
             healers[guid].inspectConfirmed = false;
             CheckSelfSpec();
+            BroadcastSpec();
         end
         -- Rescan to pick up talent-based cooldowns (e.g., Mana Tide)
         ScanGroupComposition();
@@ -4667,6 +4799,17 @@ local function OnEvent(self, event, ...)
         if not senderGUID then return; end
 
         local _, engClass = GetPlayerInfoByGUID(senderGUID);
+
+        -- "SPEC:<0|1>" — remote HealerWatch user broadcasting their healer status
+        local specFlag = addonMsg:match("^SPEC:([01])$");
+        if specFlag then
+            local data = healers[senderGUID];
+            if data and not data.inspectConfirmed then
+                data.isHealer = (specFlag == "1");
+                data.inspectConfirmed = true;
+            end
+            return;
+        end
 
         -- "CD:spellId:duration" — single cooldown just cast
         local cdSpellStr, cdDurStr = addonMsg:match("^CD:(%d+):(%d+)$");
