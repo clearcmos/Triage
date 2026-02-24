@@ -1695,32 +1695,89 @@ local function CreateRowFrame()
             if raidCooldowns[guid .. "-" .. sid] then hasContent = true; break; end
         end
         if not hasContent then return; end
-        GameTooltip:SetOwner(self, "ANCHOR_NONE");
-        GameTooltip:SetPoint("LEFT", self, "RIGHT", 8, 0);
-        GameTooltip:ClearLines();
+        if not self.healerTooltip then
+            local tip = CreateFrame("Frame", nil, UIParent, "BackdropTemplate");
+            tip:SetFrameStrata("TOOLTIP");
+            tip:SetFrameLevel(200);
+            tip:SetBackdrop({
+                bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = true, tileSize = 16, edgeSize = 12,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            });
+            tip:SetBackdropColor(0, 0, 0, 0.9);
+            tip:SetBackdropBorderColor(0.6, 0.6, 0.6, 0.8);
+            tip:SetClampedToScreen(true);
+            tip:Hide();
+            tip.rows = {};
+            self.healerTooltip = tip;
+        end
+        local tip = self.healerTooltip;
         local now = GetTime();
-        for _, sid in ipairs(tooltipSpells) do
+        local fontSize = 12;
+        local rowHeight = fontSize + 4;
+        local pad = 6;
+        local colGap = 8;
+        local maxSpellW = 0;
+        local maxStatusW = 0;
+        local count = 0;
+        for i, sid in ipairs(tooltipSpells) do
             local entry = raidCooldowns[guid .. "-" .. sid];
             if entry then
+                count = count + 1;
+                local row = tip.rows[count];
+                if not row then
+                    row = {};
+                    row.spell = tip:CreateFontString(nil, "OVERLAY");
+                    row.spell:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    row.spell:SetJustifyH("LEFT");
+                    row.status = tip:CreateFontString(nil, "OVERLAY");
+                    row.status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    row.status:SetJustifyH("LEFT");
+                    tip.rows[count] = row;
+                end
+                row.spell:SetText(entry.spellName);
+                row.spell:SetTextColor(1, 1, 1);
                 if entry.expiryTime <= now then
-                    GameTooltip:AddLine(format("%s  |cff33ff33Ready|r", entry.spellName), 1, 1, 1);
+                    row.status:SetText("Ready");
+                    row.status:SetTextColor(0.2, 1, 0.2);
                 else
                     local rem = entry.expiryTime - now;
                     local mins = floor(rem / 60);
                     local secs = floor(rem - mins * 60);
-                    local timerStr = (mins > 0) and format("%d:%02d", mins, secs) or format("%ds", secs);
-                    GameTooltip:AddLine(format("%s  |cffffcc33%s|r", entry.spellName, timerStr), 1, 1, 1);
+                    row.status:SetText(format("%d:%02d", mins, secs));
+                    row.status:SetTextColor(1, 0.8, 0.2);
                 end
+                local sw = row.spell:GetStringWidth();
+                local stw = row.status:GetStringWidth();
+                if sw > maxSpellW then maxSpellW = sw; end
+                if stw > maxStatusW then maxStatusW = stw; end
+                row.spell:Show();
+                row.status:Show();
             end
         end
-        GameTooltip:Show();
-        -- Fix first line using header font — override to body font
-        local left1 = GameTooltipTextLeft1;
-        if left1 then left1:SetFontObject(GameTooltipText); end
+        for i = count + 1, #tip.rows do
+            tip.rows[i].spell:Hide();
+            tip.rows[i].status:Hide();
+        end
+        if count == 0 then return; end
+        local statusX = pad + maxSpellW + colGap;
+        for i = 1, count do
+            local row = tip.rows[i];
+            local yOff = -pad - (i - 1) * rowHeight;
+            row.spell:ClearAllPoints();
+            row.spell:SetPoint("TOPLEFT", tip, "TOPLEFT", pad, yOff);
+            row.status:ClearAllPoints();
+            row.status:SetPoint("TOPLEFT", tip, "TOPLEFT", statusX, yOff);
+        end
+        tip:SetSize(statusX + maxStatusW + pad, pad * 2 + count * rowHeight);
+        tip:ClearAllPoints();
+        tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+        tip:Show();
     end);
     frame:SetScript("OnLeave", function(self)
         self.highlight:Hide();
-        GameTooltip:Hide();
+        if self.healerTooltip then self.healerTooltip:Hide(); end
     end);
 
     frame:SetScript("OnClick", function(self, button)
