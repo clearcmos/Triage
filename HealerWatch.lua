@@ -52,6 +52,7 @@ local DEFAULT_SETTINGS = {
     cdSymbolOfHope = true,
     cdRebirth = true,
     cdSoulstone = true,
+    cdShadowfiend = false,
 };
 
 --------------------------------------------------------------------------------
@@ -133,6 +134,7 @@ local BLOODLUST_SPELL_ID = 2825;
 local HEROISM_SPELL_ID = 32182;
 local POWER_INFUSION_SPELL_ID = 10060;
 local SYMBOL_OF_HOPE_SPELL_ID = 32548;
+-- Shadowfiend spell ID: 34433 (inlined to avoid 200-local limit)
 local SYMBOL_OF_HOPE_SPELL_NAME = GetSpellInfo(32548) or "Symbol of Hope";
 -- Soulstone Resurrection buff IDs (applied to target when warlock uses soulstone)
 local SOULSTONE_BUFF_IDS = {
@@ -199,6 +201,11 @@ local RAID_COOLDOWN_SPELLS = {
         icon = select(3, GetSpellInfo(SYMBOL_OF_HOPE_SPELL_ID)) or 135982,
         duration = 300,
     },
+    [34433] = {
+        name = GetSpellInfo(34433) or "Shadowfiend",
+        icon = select(3, GetSpellInfo(34433)) or 136199,
+        duration = 300,
+    },
 };
 
 -- Rebirth (6 ranks, all same CD) — shared info referenced by each rank ID
@@ -244,6 +251,7 @@ local COOLDOWN_SETTING_KEY = {
     -- [HEROISM_SPELL_ID]            = "cdBloodlustHeroism",  -- disabled for now
     -- [POWER_INFUSION_SPELL_ID]     = "cdPowerInfusion",     -- disabled for now
     [SYMBOL_OF_HOPE_SPELL_ID]     = "cdSymbolOfHope",
+    [34433]        = "cdShadowfiend",
     [20484]                        = "cdRebirth",
     [20707]                        = "cdSoulstone",
 };
@@ -252,6 +260,7 @@ local COOLDOWN_SETTING_KEY = {
 local CLASS_COOLDOWN_SPELLS = {
     ["DRUID"] = { INNERVATE_SPELL_ID, 20484 },                   -- Innervate, Rebirth
     -- Paladin: no class-baseline cooldowns tracked
+    ["PRIEST"] = { 34433 },                         -- Shadowfiend
     ["WARLOCK"] = { 20707 },                                      -- Soulstone
     -- Shaman BL/Heroism handled separately (faction-dependent)
 };
@@ -1104,24 +1113,34 @@ local function GroupCooldownsBySpell()
             if deadCache[guid] == nil then
                 deadCache[guid] = IsCasterDead(guid);
             end
-            tinsert(spellGroupCache[sid].casters, {
-                guid = guid,
-                name = entry.name,
-                classFile = entry.classFile,
-                expiryTime = entry.expiryTime,
-                lastCastTime = entry.lastCastTime or 0,
-                isDead = deadCache[guid],
-            });
+            -- Skip dead casters entirely
+            if not deadCache[guid] then
+                tinsert(spellGroupCache[sid].casters, {
+                    guid = guid,
+                    name = entry.name,
+                    classFile = entry.classFile,
+                    expiryTime = entry.expiryTime,
+                    lastCastTime = entry.lastCastTime or 0,
+                    isDead = false,
+                });
+            end
         end
     end
 
     for _, group in pairs(spellGroupCache) do
-        -- Sort casters: alive+ready first, then alive+shortest CD, then dead
-        sort(group.casters, SortCastersByAvailability);
-        tinsert(sortedSpellGroupCache, group);
+        if #group.casters > 0 then
+            -- Sort casters: alive+ready first, then shortest CD
+            sort(group.casters, SortCastersByAvailability);
+            tinsert(sortedSpellGroupCache, group);
+        end
     end
 
-    sort(sortedSpellGroupCache, SortBySpellNameAsc);
+    sort(sortedSpellGroupCache, function(a, b)
+        local aReq = CD_REQUEST_CONFIG[a.spellId] and CD_REQUEST_CONFIG[a.spellId].subgroupAware;
+        local bReq = CD_REQUEST_CONFIG[b.spellId] and CD_REQUEST_CONFIG[b.spellId].subgroupAware;
+        if aReq ~= bReq then return aReq and true or false; end
+        return a.spellName < b.spellName;
+    end);
 
     return sortedSpellGroupCache;
 end
@@ -1161,7 +1180,7 @@ local function GetAverageMana()
             count = count + 1;
         end
     end
-    if count == 0 then return 0; end
+    if count == 0 then return 100; end
     return floor(total / count + 0.5);
 end
 
@@ -1350,6 +1369,12 @@ local function CheckManaWarnings()
     if not db.sendWarnings then return; end
     if not IsInGroup() then return; end
     if not IsBroadcaster() then return; end
+
+    -- Only warn in combat, or out of combat inside a dungeon/raid
+    if not InCombatLockdown() then
+        local _, instanceType = GetInstanceInfo();
+        if instanceType ~= "party" and instanceType ~= "raid" then return; end
+    end
 
     local now = GetTime();
     if now - lastWarningTime < db.warningCooldown then return; end
@@ -1650,9 +1675,52 @@ local function CreateRowFrame()
 
     frame:SetScript("OnEnter", function(self)
         if db and db.showRowHighlight then self.highlight:Show(); end
+        -- Recovery cooldown tooltip
+        local guid = self.healerGUID;
+        local hdata = guid and healers[guid];
+        if not hdata then return; end
+        -- Build spell list per class (inline to avoid file-scope local)
+        local cls = hdata.classFile;
+        local tooltipSpells;
+        if cls == "DRUID" then
+            tooltipSpells = { INNERVATE_SPELL_ID, 20484 };
+        elseif cls == "SHAMAN" then
+            tooltipSpells = { MANA_TIDE_CAST_SPELL_ID };
+        elseif cls == "PRIEST" then
+            tooltipSpells = { 34433, SYMBOL_OF_HOPE_SPELL_ID };
+        end
+        if not tooltipSpells then return; end
+        local hasContent = false;
+        for _, sid in ipairs(tooltipSpells) do
+            if raidCooldowns[guid .. "-" .. sid] then hasContent = true; break; end
+        end
+        if not hasContent then return; end
+        GameTooltip:SetOwner(self, "ANCHOR_NONE");
+        GameTooltip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+        GameTooltip:ClearLines();
+        local now = GetTime();
+        for _, sid in ipairs(tooltipSpells) do
+            local entry = raidCooldowns[guid .. "-" .. sid];
+            if entry then
+                if entry.expiryTime <= now then
+                    GameTooltip:AddLine(format("%s  |cff33ff33Ready|r", entry.spellName), 1, 1, 1);
+                else
+                    local rem = entry.expiryTime - now;
+                    local mins = floor(rem / 60);
+                    local secs = floor(rem - mins * 60);
+                    local timerStr = (mins > 0) and format("%d:%02d", mins, secs) or format("%ds", secs);
+                    GameTooltip:AddLine(format("%s  |cffffcc33%s|r", entry.spellName, timerStr), 1, 1, 1);
+                end
+            end
+        end
+        GameTooltip:Show();
+        -- Fix first line using header font — override to body font
+        local left1 = GameTooltipTextLeft1;
+        if left1 then left1:SetFontObject(GameTooltipText); end
     end);
     frame:SetScript("OnLeave", function(self)
         self.highlight:Hide();
+        GameTooltip:Hide();
     end);
 
     frame:SetScript("OnClick", function(self, button)
@@ -1800,9 +1868,101 @@ local function CreateCdRowFrame()
 
     frame:SetScript("OnEnter", function(self)
         if db and db.showRowHighlight then self.highlight:Show(); end
+        local group = self.spellGroup;
+        if not group or not group.casters or #group.casters == 0 then return; end
+        -- Custom tooltip for aligned columns
+        if not self.cdTooltip then
+            local tip = CreateFrame("Frame", nil, UIParent, "BackdropTemplate");
+            tip:SetFrameStrata("TOOLTIP");
+            tip:SetFrameLevel(200);
+            tip:SetBackdrop({
+                bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = true, tileSize = 16, edgeSize = 12,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            });
+            tip:SetBackdropColor(0, 0, 0, 0.9);
+            tip:SetBackdropBorderColor(0.6, 0.6, 0.6, 0.8);
+            tip:SetClampedToScreen(true);
+            tip:Hide();
+            tip.rows = {};
+            self.cdTooltip = tip;
+        end
+        local tip = self.cdTooltip;
+        local now = GetTime();
+        -- Collect alive casters, sort by expiryTime: ready first, then soonest CD
+        local sorted = {};
+        for _, c in ipairs(group.casters) do
+            if not c.isDead then
+                tinsert(sorted, c);
+            end
+        end
+        if #sorted == 0 then return; end
+        sort(sorted, function(a, b)
+            local aRem = a.expiryTime <= now and -1 or a.expiryTime;
+            local bRem = b.expiryTime <= now and -1 or b.expiryTime;
+            return aRem < bRem;
+        end);
+        -- Build rows
+        local fontSize = 12;
+        local rowHeight = fontSize + 4;
+        local pad = 6;
+        local colGap = 8;
+        local maxStatusW = 0;
+        local maxNameW = 0;
+        for i, c in ipairs(sorted) do
+            local row = tip.rows[i];
+            if not row then
+                row = {};
+                row.status = tip:CreateFontString(nil, "OVERLAY");
+                row.status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                row.status:SetJustifyH("LEFT");
+                row.name = tip:CreateFontString(nil, "OVERLAY");
+                row.name:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                row.name:SetJustifyH("LEFT");
+                tip.rows[i] = row;
+            end
+            if c.expiryTime <= now then
+                row.status:SetText("Ready");
+                row.status:SetTextColor(0.2, 1, 0.2);
+            else
+                local rem = c.expiryTime - now;
+                row.status:SetText(format("%d:%02d", floor(rem / 60), floor(rem - floor(rem / 60) * 60)));
+                row.status:SetTextColor(1, 0.8, 0.2);
+            end
+            local cr, cg, cb = GetClassColor(c.classFile);
+            row.name:SetText(c.name);
+            row.name:SetTextColor(cr, cg, cb);
+            local sw = row.status:GetStringWidth();
+            local nw = row.name:GetStringWidth();
+            if sw > maxStatusW then maxStatusW = sw; end
+            if nw > maxNameW then maxNameW = nw; end
+            row.status:Show();
+            row.name:Show();
+        end
+        -- Hide extra rows
+        for i = #sorted + 1, #tip.rows do
+            tip.rows[i].status:Hide();
+            tip.rows[i].name:Hide();
+        end
+        -- Position rows
+        local nameX = pad + maxStatusW + colGap;
+        for i = 1, #sorted do
+            local row = tip.rows[i];
+            local yOff = -pad - (i - 1) * rowHeight;
+            row.status:ClearAllPoints();
+            row.status:SetPoint("TOPLEFT", tip, "TOPLEFT", pad, yOff);
+            row.name:ClearAllPoints();
+            row.name:SetPoint("TOPLEFT", tip, "TOPLEFT", nameX, yOff);
+        end
+        tip:SetSize(nameX + maxNameW + pad, pad * 2 + #sorted * rowHeight);
+        tip:ClearAllPoints();
+        tip:SetPoint("LEFT", self, "RIGHT", 8, 0);
+        tip:Show();
     end);
     frame:SetScript("OnLeave", function(self)
         self.highlight:Hide();
+        if self.cdTooltip then self.cdTooltip:Hide(); end
     end);
 
     -- Click handler for cooldown requests
@@ -2461,19 +2621,22 @@ ShowCdRowRequestMenu = function(cdRow)
     local now = GetTime();
     local maxWidth = 0;
 
-    -- Re-sort casters: alive+ready first, then alive+shortest CD, then dead
-    sort(group.casters, function(a, b)
-        if a.isDead ~= b.isDead then return not a.isDead; end
-        local aReady = (not a.isDead and a.expiryTime <= now);
-        local bReady = (not b.isDead and b.expiryTime <= now);
-        if aReady ~= bReady then return aReady; end
-        if not a.isDead and not b.isDead then
-            return a.expiryTime < b.expiryTime;
+    -- Filter to alive casters, sort ready first then shortest CD
+    local aliveCasters = {};
+    for _, c in ipairs(group.casters) do
+        if not c.isDead then
+            tinsert(aliveCasters, c);
         end
-        return a.name < b.name;
+    end
+    if #aliveCasters == 0 then return; end
+    sort(aliveCasters, function(a, b)
+        local aReady = (a.expiryTime <= now);
+        local bReady = (b.expiryTime <= now);
+        if aReady ~= bReady then return aReady; end
+        return a.expiryTime < b.expiryTime;
     end);
 
-    for i, c in ipairs(group.casters) do
+    for i, c in ipairs(aliveCasters) do
         local item = contextMenuFrame.items[i];
         if not item then
             item = CreateMenuItem(contextMenuFrame);
@@ -2482,9 +2645,7 @@ ShowCdRowRequestMenu = function(cdRow)
 
         -- Build state string
         local stateStr;
-        if c.isDead then
-            stateStr = "|cff808080Dead|r";
-        elseif c.expiryTime <= now then
+        if c.expiryTime <= now then
             stateStr = "|cff00ff00Ready|r";
         else
             local rem = c.expiryTime - now;
@@ -2501,8 +2662,8 @@ ShowCdRowRequestMenu = function(cdRow)
         item:SetPoint("TOPLEFT", contextMenuFrame, "TOPLEFT", MENU_PADDING, -(MENU_PADDING + (i - 1) * MENU_ITEM_HEIGHT));
         item:SetPoint("RIGHT", contextMenuFrame, "RIGHT", -MENU_PADDING, 0);
 
-        -- Clickable only if alive and ready (or preview mode)
-        local isClickable = previewActive or (not c.isDead and c.expiryTime <= now);
+        -- Clickable only if ready (or preview mode)
+        local isClickable = previewActive or (c.expiryTime <= now);
         item.casterName = c.name;
 
         if isClickable then
@@ -2564,7 +2725,7 @@ ShowCdRowRequestMenu = function(cdRow)
     end
 
     local menuWidth = max(maxWidth + MENU_PADDING * 2, 120);
-    local menuHeight = MENU_PADDING * 2 + #group.casters * MENU_ITEM_HEIGHT;
+    local menuHeight = MENU_PADDING * 2 + #aliveCasters * MENU_ITEM_HEIGHT;
     contextMenuFrame:SetSize(menuWidth, menuHeight);
 
     -- Anchor near the cursor
@@ -3596,7 +3757,7 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
             end
             for key, entry in pairs(raidCooldowns) do
                 if entry.expiryTime <= now then
-                    if key == "preview-inn" or key == "preview-inn2" or key == "preview-rebirth" or key == "preview-rebirth2" or key == "preview-ss" or key == "preview-ss2" or key == "preview-tide" or key == "preview-soh" then
+                    if key:sub(1, 8) == "preview-" then
                         -- Leave expired so they show "Ready" / "Request"
                     else
                         entry.expiryTime = now + RAID_COOLDOWN_SPELLS[entry.spellId].duration;
@@ -3729,7 +3890,8 @@ StartPreview = function()
     -- local isHorde = (UnitFactionGroup("player") == "Horde");
     -- local blInfo = isHorde and bloodlustInfo or heroismInfo;
     -- local blSpellId = isHorde and BLOODLUST_SPELL_ID or HEROISM_SPELL_ID;
-    raidCooldowns["preview-inn"] = {
+    -- Use guid-spellId keys so tooltip lookups work in preview
+    raidCooldowns["preview-guid-2-" .. INNERVATE_SPELL_ID] = {
         sourceGUID = "preview-guid-2",
         name = "Treehugger",
         classFile = "DRUID",
@@ -3738,7 +3900,16 @@ StartPreview = function()
         spellName = innervateInfo.name,
         expiryTime = now - 1,  -- starts as "Ready"
     };
-    raidCooldowns["preview-tide"] = {
+    raidCooldowns["preview-guid-2-20484"] = {
+        sourceGUID = "preview-guid-2",
+        name = "Treehugger",
+        classFile = "DRUID",
+        spellId = 20484,
+        icon = rebirthInfo.icon,
+        spellName = rebirthInfo.name,
+        expiryTime = now - 1,  -- starts as "Ready"
+    };
+    raidCooldowns["preview-guid-4-" .. MANA_TIDE_CAST_SPELL_ID] = {
         sourceGUID = "preview-guid-4",
         name = "Tidecaller",
         classFile = "SHAMAN",
@@ -3748,7 +3919,7 @@ StartPreview = function()
         expiryTime = now - 1,  -- starts as "Ready"
     };
     -- Bloodlust/Heroism preview disabled for now
-    -- raidCooldowns["preview-bl"] = {
+    -- raidCooldowns["preview-guid-4-" .. blSpellId] = {
     --     sourceGUID = "preview-guid-4",
     --     name = "Tidecaller",
     --     classFile = "SHAMAN",
@@ -3757,16 +3928,7 @@ StartPreview = function()
     --     spellName = blInfo.name,
     --     expiryTime = now + 420,
     -- };
-    raidCooldowns["preview-rebirth"] = {
-        sourceGUID = "preview-guid-2",
-        name = "Treehugger",
-        classFile = "DRUID",
-        spellId = 20484,
-        icon = rebirthInfo.icon,
-        spellName = rebirthInfo.name,
-        expiryTime = now - 1,  -- starts as "Ready"
-    };
-    raidCooldowns["preview-ss"] = {
+    raidCooldowns["preview-guid-ss-20707"] = {
         sourceGUID = "preview-guid-ss",
         name = "Shadowlock",
         classFile = "WARLOCK",
@@ -3777,17 +3939,17 @@ StartPreview = function()
     };
     -- Power Infusion preview disabled for now
     -- local piInfo = RAID_COOLDOWN_SPELLS[POWER_INFUSION_SPELL_ID];
-    -- raidCooldowns["preview-pi"] = {
+    -- raidCooldowns["preview-guid-1-" .. POWER_INFUSION_SPELL_ID] = {
     --     sourceGUID = "preview-guid-1",
     --     name = "Holypriest",
     --     classFile = "PRIEST",
     --     spellId = POWER_INFUSION_SPELL_ID,
     --     icon = piInfo.icon,
     --     spellName = piInfo.name,
-    --     expiryTime = now - 1,  -- starts as "Ready"
+    --     expiryTime = now - 1,
     -- };
     local sohInfo = RAID_COOLDOWN_SPELLS[SYMBOL_OF_HOPE_SPELL_ID];
-    raidCooldowns["preview-soh"] = {
+    raidCooldowns["preview-guid-1-" .. SYMBOL_OF_HOPE_SPELL_ID] = {
         sourceGUID = "preview-guid-1",
         name = "Holypriest",
         classFile = "PRIEST",
@@ -3796,8 +3958,27 @@ StartPreview = function()
         spellName = sohInfo.name,
         expiryTime = now - 1,  -- starts as "Ready"
     };
+    local sfInfo = RAID_COOLDOWN_SPELLS[34433];
+    raidCooldowns["preview-guid-1-" .. 34433] = {
+        sourceGUID = "preview-guid-1",
+        name = "Holypriest",
+        classFile = "PRIEST",
+        spellId = 34433,
+        icon = sfInfo.icon,
+        spellName = sfInfo.name,
+        expiryTime = now + 180,  -- on CD
+    };
+    raidCooldowns["preview-guid-7-" .. 34433] = {
+        sourceGUID = "preview-guid-7",
+        name = "Rebirthed",
+        classFile = "PRIEST",
+        spellId = 34433,
+        icon = sfInfo.icon,
+        spellName = sfInfo.name,
+        expiryTime = now - 1,  -- starts as "Ready"
+    };
     -- Duplicate casters to demonstrate spell grouping
-    raidCooldowns["preview-inn2"] = {
+    raidCooldowns["preview-guid-druid2-" .. INNERVATE_SPELL_ID] = {
         sourceGUID = "preview-guid-druid2",
         name = "Barkskin",
         classFile = "DRUID",
@@ -3806,7 +3987,7 @@ StartPreview = function()
         spellName = innervateInfo.name,
         expiryTime = now + 180,  -- on CD
     };
-    raidCooldowns["preview-rebirth2"] = {
+    raidCooldowns["preview-guid-druid2-20484"] = {
         sourceGUID = "preview-guid-druid2",
         name = "Barkskin",
         classFile = "DRUID",
@@ -3815,7 +3996,7 @@ StartPreview = function()
         spellName = rebirthInfo.name,
         expiryTime = now + 900,  -- on CD
     };
-    raidCooldowns["preview-ss2"] = {
+    raidCooldowns["preview-guid-ss2-20707"] = {
         sourceGUID = "preview-guid-ss2",
         name = "Demonlock",
         classFile = "WARLOCK",
@@ -4251,6 +4432,16 @@ local function OnEvent(self, event, ...)
             RegisterSelf();
         end
 
+    elseif event == "ACTIVE_TALENT_GROUP_CHANGED" or event == "CHARACTER_POINTS_CHANGED" then
+        -- Player switched specs or respecced — re-evaluate self and rescan cooldowns
+        local guid = UnitGUID("player");
+        if guid and healers[guid] then
+            healers[guid].inspectConfirmed = false;
+            CheckSelfSpec();
+        end
+        -- Rescan to pick up talent-based cooldowns (e.g., Mana Tide)
+        ScanGroupComposition();
+
     elseif event == "PLAYER_ROLES_ASSIGNED" then
         -- Re-check roles; someone may have been assigned healer
         for guid, data in pairs(healers) do
@@ -4422,6 +4613,8 @@ EventFrame:RegisterEvent("GROUP_ROSTER_UPDATE");
 EventFrame:RegisterEvent("PLAYER_ENTERING_WORLD");
 EventFrame:RegisterEvent("PLAYER_LEAVING_WORLD");
 EventFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED");
+EventFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED");
+EventFrame:RegisterEvent("CHARACTER_POINTS_CHANGED");
 EventFrame:RegisterEvent("INSPECT_READY");
 EventFrame:RegisterEvent("UNIT_POWER_UPDATE");
 EventFrame:RegisterEvent("UNIT_AURA");
