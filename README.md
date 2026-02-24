@@ -1,6 +1,6 @@
 # HealerWatch
 
-**HealerWatch** tracks healer mana and recovery state in group content. It automatically detects healers via talent inspection and displays color-coded mana percentages with recovery indicators - who's drinking, who has Innervate, whose mana potions are on cooldown. It also tracks the availability of mana recovery cooldowns (Innervate, Mana Tide, Symbol of Hope) and healer resurrection tools (Rebirth, Soulstone), with click-to-request coordination to get help where it's needed.
+**HealerWatch** tracks healer mana and recovery state in group content. It automatically detects healers via talent inspection and displays color-coded mana percentages with recovery indicators - who's drinking, who has Innervate, whose mana potions are on cooldown. It also tracks the availability of mana recovery cooldowns (Innervate, Mana Tide, Symbol of Hope) and resurrection tools (Rebirth, Soulstone), with click-to-request coordination to get help where it's needed.
 
 Built specifically for **TBC Classic Anniversary**.
 
@@ -36,7 +36,7 @@ Built specifically for **TBC Classic Anniversary**.
 **Group Coordination**
 - **Chat warnings** - Optional automatic warnings to party/raid when average healer mana drops below a configurable threshold
 - **Single-broadcaster election** - When multiple players have HealerWatch, only one sends warnings. Auto-elected by rank, with manual override via `/hwatch sync`
-- **Cross-zone sync** - HealerWatch users share cooldown states via addon messages, keeping timers accurate across zones
+- **Cross-zone sync** - Cooldown timers stay accurate even when group members are in different zones
 
 **Display & Customization**
 - **Split or merged display** - Recovery cooldowns in their own frame or combined with healer mana
@@ -110,4 +110,4 @@ MIT License - Open source and free to use.
 
 ## Feedback & Issues
 
-Found a bug or have a suggestion? Reach me on Discord: `_cmos` or open an issue on GitHub: https://github.com/clearcmos/HealerWatch
+Found a bug or have a suggestion? Post a comment on this addon's CurseForge page, reach me on Discord: `_cmos`, or open an issue on GitHub: https://github.com/clearcmos/HealerWatch
