@@ -362,6 +362,9 @@ local WHISPER_COOLDOWN = 1.0;
 -- Menu dismiss suppression (prevents click-through when closing menu)
 local menuDismissTime = 0;
 
+-- Delayed rescan dedup flag (for cross-zone late-arriving member data)
+local pendingRescan = false;
+
 -- Update throttling
 local updateElapsed = 0;
 local UPDATE_INTERVAL = 0.2;
@@ -3926,6 +3929,7 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
             RegisterSelf();
             if IsInGroup() then
                 BroadcastHello();
+                BroadcastSpec();
             end
             -- Prune stale healerWatchUsers
             local now = GetTime();
@@ -4671,11 +4675,20 @@ local function OnEvent(self, event, ...)
             db.savedCooldowns = nil;
         end
 
-    elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
+    elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD"
+        or event == "PARTY_MEMBER_ENABLE" then
         ScanGroupComposition();
         if IsInGroup() then
             RegisterSelf();
             BroadcastHello();
+            -- Delayed rescan to catch late-arriving member data (cross-zone joins)
+            if not pendingRescan then
+                pendingRescan = true;
+                C_Timer.After(2, function()
+                    pendingRescan = false;
+                    if IsInGroup() then ScanGroupComposition(); end
+                end);
+            end
         else
             -- Solo: wipe healerWatchUsers, keep only self
             wipe(healerWatchUsers);
@@ -4765,10 +4778,11 @@ local function OnEvent(self, event, ...)
                 lastSeen = GetTime(),
                 rank = senderRank,
             };
-            -- Reply with our own HELLO if we haven't sent one recently
+            -- Reply with our own HELLO + SPEC if we haven't sent one recently
             if GetTime() - lastHelloTime > HELLO_REPLY_COOLDOWN then
                 BroadcastHello();
             end
+            BroadcastSpec();
             if RefreshSyncFrame then RefreshSyncFrame(); end
             return;
         end
@@ -4873,6 +4887,7 @@ EventFrame:SetScript("OnEvent", OnEvent);
 EventFrame:RegisterEvent("ADDON_LOADED");
 EventFrame:RegisterEvent("PLAYER_LOGIN");
 EventFrame:RegisterEvent("GROUP_ROSTER_UPDATE");
+EventFrame:RegisterEvent("PARTY_MEMBER_ENABLE");
 EventFrame:RegisterEvent("PLAYER_ENTERING_WORLD");
 EventFrame:RegisterEvent("PLAYER_LEAVING_WORLD");
 EventFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED");

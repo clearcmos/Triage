@@ -1,3 +1,9 @@
+## v1.2.1
+
+### Fixed
+- Cross-zone healer detection: added PARTY_MEMBER_ENABLE event and a delayed rescan after roster updates to catch late-arriving member data, fixing cases where cross-zone party members weren't detected by other HealerWatch users.
+- SPEC broadcast missed by late joiners: spec is now re-broadcast every 30s via heartbeat and immediately in response to HELLO messages, so cross-zone HealerWatch users confirm each other without needing inspect proximity.
+
 ## v1.2.0
 
 ### Added
