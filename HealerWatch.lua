@@ -21,6 +21,7 @@ local DEFAULT_SETTINGS = {
     showSoulstone = true,
     showRebirth = true,
     showSymbolOfHope = true,
+    showShadowfiend = true,
     showPotionCooldown = true,
     showAverageMana = true,
     showStatusDuration = false,
@@ -44,6 +45,7 @@ local DEFAULT_SETTINGS = {
     iconSize = 16,
     showRowHighlight = true,
     enableCdRequest = true,
+    innervateRequestMode = "menu",  -- "menu", "self", "lowest"
     innervateRequestThreshold = 100,
     headerBackground = true,
     cdInnervate = true,
@@ -167,8 +169,11 @@ local STATUS_ICONS = {
     soulstone    = select(3, GetSpellInfo(20707))  or 136210,   -- Soulstone Resurrection
     rebirth      = select(3, GetSpellInfo(20484))  or 136080,   -- Rebirth
     symbolOfHope = select(3, GetSpellInfo(32548))  or 135982,   -- Symbol of Hope
+    shadowfiend  = select(3, GetSpellInfo(34433))  or 136199,   -- Shadowfiend
     potion       = 134762,                                       -- Generic potion (inv_potion_137)
 };
+
+local FONT_PATH = "Fonts\\FRIZQT__.TTF";
 
 -- Raid-wide cooldown spells tracked at the bottom of the display
 -- Multi-rank spells share a single info table referenced by all rank IDs
@@ -265,6 +270,13 @@ local CLASS_COOLDOWN_SPELLS = {
     ["PRIEST"] = { 34433 },                         -- Shadowfiend
     ["WARLOCK"] = { 20707 },                                      -- Soulstone
     -- Shaman BL/Heroism handled separately (faction-dependent)
+};
+
+-- Spells shown in healer row tooltips (personal cooldown timers per class)
+local TOOLTIP_SPELLS_BY_CLASS = {
+    ["DRUID"]  = { INNERVATE_SPELL_ID, 20484 },
+    ["SHAMAN"] = { MANA_TIDE_CAST_SPELL_ID },
+    ["PRIEST"] = { 34433, SYMBOL_OF_HOPE_SPELL_ID },
 };
 
 -- Talent-based cooldowns to check for player via IsSpellKnown
@@ -476,7 +488,7 @@ local function MeasureText(text, fontSize)
     if not measureFS then
         measureFS = UIParent:CreateFontString(nil, "OVERLAY");
     end
-    measureFS:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+    measureFS:SetFont(FONT_PATH, fontSize, "OUTLINE");
     measureFS:SetText(text);
     return measureFS:GetStringWidth();
 end
@@ -530,6 +542,16 @@ local function FormatStatusText(data)
         local dur = FormatDuration(data.manaTideExpiry, now);
         tinsert(statusDurParts, dur);
         tinsert(statusIconParts, { icon = STATUS_ICONS.manaTide, duration = dur });
+    end
+    if data.hasShadowfiend and db.showShadowfiend then
+        if data.shadowfiendExpiry > now then
+            tinsert(statusLabelParts, "|cff9482c9Shadowfiend|r");
+            local dur = FormatDuration(data.shadowfiendExpiry, now);
+            tinsert(statusDurParts, dur);
+            tinsert(statusIconParts, { icon = STATUS_ICONS.shadowfiend, duration = dur });
+        else
+            data.hasShadowfiend = false;
+        end
     end
     if data.isDrinking and db.showDrinking then
         tinsert(statusLabelParts, "|cff55ccffDrinking|r");
@@ -909,6 +931,12 @@ ScanGroupComposition = function()
     end
     db.savedCooldowns = nil;
 
+    -- Restore confirmed healer status saved before last /reload.
+    -- Unlike cooldowns, these are simple booleans with no GetTime() dependency,
+    -- but skip on fresh login in case someone respecced while offline.
+    local savedStatus = db and db.savedHealerStatus and not isFreshLogin and db.savedHealerStatus or nil;
+    if db then db.savedHealerStatus = nil; end
+
     -- Clear inspect queue (will re-queue unresolved members below)
     wipe(inspectQueue);
     -- Don't wipe inspectRetries — preserve progress across roster updates
@@ -953,8 +981,16 @@ ScanGroupComposition = function()
                     hasRebirth = false,
                     hasSymbolOfHope = false,
                     symbolOfHopeExpiry = 0,
+                    hasShadowfiend = false,
+                    shadowfiendExpiry = 0,
                     potionExpiry = 0,
                 };
+            end
+
+            -- Restore saved healer status from before /reload
+            if savedStatus and savedStatus[guid] and not healers[guid].inspectConfirmed then
+                healers[guid].isHealer = savedStatus[guid].isHealer;
+                healers[guid].inspectConfirmed = true;
             end
 
             -- Always update unit token and name (can change on roster change)
@@ -1106,7 +1142,13 @@ local function SortCastersByAvailability(a, b)
     end
     return a.name < b.name;
 end
--- Sort comparator inlined at call site (cannot hoist to file scope due to 200-local limit)
+-- Sort spell groups: subgroupAware (requestable) first, then alphabetical
+local function SortSpellGroupsByRequestThenName(a, b)
+    local aReq = CD_REQUEST_CONFIG[a.spellId] and CD_REQUEST_CONFIG[a.spellId].subgroupAware;
+    local bReq = CD_REQUEST_CONFIG[b.spellId] and CD_REQUEST_CONFIG[b.spellId].subgroupAware;
+    if aReq ~= bReq then return aReq and true or false; end
+    return a.spellName < b.spellName;
+end
 
 local function GetSortedHealers()
     wipe(sortedCache);
@@ -1172,12 +1214,7 @@ local function GroupCooldownsBySpell()
         end
     end
 
-    sort(sortedSpellGroupCache, function(a, b)
-        local aReq = CD_REQUEST_CONFIG[a.spellId] and CD_REQUEST_CONFIG[a.spellId].subgroupAware;
-        local bReq = CD_REQUEST_CONFIG[b.spellId] and CD_REQUEST_CONFIG[b.spellId].subgroupAware;
-        if aReq ~= bReq then return aReq and true or false; end
-        return a.spellName < b.spellName;
-    end);
+    sort(sortedSpellGroupCache, SortSpellGroupsByRequestThenName);
 
     return sortedSpellGroupCache;
 end
@@ -1200,9 +1237,9 @@ local function UpdateManaValues()
                 if manaMax > 0 then
                     local mana = UnitPower(data.unit, POWER_TYPE_MANA);
                     data.manaPercent = floor((mana / manaMax) * 100 + 0.5);
-                else
-                    data.manaPercent = 0;
                 end
+                -- manaMax == 0 means unit data hasn't loaded (out of range);
+                -- keep previous manaPercent rather than slamming to 0
             end
         end
     end
@@ -1212,7 +1249,7 @@ local function GetAverageMana()
     local total = 0;
     local count = 0;
     for guid, data in pairs(healers) do
-        if data.isHealer and data.manaPercent >= 0 then
+        if data.isHealer and data.inspectConfirmed and data.manaPercent >= 0 then
             total = total + data.manaPercent;
             count = count + 1;
         end
@@ -1288,6 +1325,14 @@ local function ProcessCombatLog()
             local data = healers[sourceGUID];
             if data and data.isHealer then
                 data.potionExpiry = GetTime() + POTION_COOLDOWN_DURATION;
+            end
+        end
+        -- Shadowfiend status indicator (15s summon duration)
+        if spellId == 34433 then
+            local data = healers[sourceGUID];
+            if data and data.isHealer then
+                data.hasShadowfiend = true;
+                data.shadowfiendExpiry = GetTime() + 15;
             end
         end
     end
@@ -1432,7 +1477,7 @@ local HealerWatchFrame = CreateFrame("Frame", "HealerWatchMainFrame", UIParent, 
 HealerWatchFrame:SetSize(220, 30);
 HealerWatchFrame:SetFrameStrata("MEDIUM");
 HealerWatchFrame:SetBackdrop({
-    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    bgFile = 131071,
     tile = true, tileSize = 16,
 });
 HealerWatchFrame:SetBackdropColor(0, 0, 0, 0.7);
@@ -1499,7 +1544,7 @@ resizeHandle:SetPoint("BOTTOMRIGHT", 0, 0);
 resizeHandle:EnableMouse(true);
 resizeHandle.tex = resizeHandle:CreateTexture(nil, "OVERLAY");
 resizeHandle.tex:SetAllPoints();
-resizeHandle.tex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up");
+resizeHandle.tex:SetTexture(386862);
 resizeHandle.tex:SetVertexColor(0.6, 0.6, 0.6);
 resizeHandle:Hide();
 HealerWatchFrame.resizeHandle = resizeHandle;
@@ -1575,7 +1620,7 @@ local CooldownFrame = CreateFrame("Frame", "HealerWatchCooldownFrame", UIParent,
 CooldownFrame:SetSize(220, 30);
 CooldownFrame:SetFrameStrata("MEDIUM");
 CooldownFrame:SetBackdrop({
-    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+    bgFile = 131071,
     tile = true, tileSize = 16,
 });
 CooldownFrame:SetBackdropColor(0, 0, 0, 0.7);
@@ -1626,7 +1671,7 @@ cdResizeHandle:SetPoint("BOTTOMRIGHT", 0, 0);
 cdResizeHandle:EnableMouse(true);
 cdResizeHandle.tex = cdResizeHandle:CreateTexture(nil, "OVERLAY");
 cdResizeHandle.tex:SetAllPoints();
-cdResizeHandle.tex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up");
+cdResizeHandle.tex:SetTexture(386862);
 cdResizeHandle.tex:SetVertexColor(0.6, 0.6, 0.6);
 cdResizeHandle:Hide();
 CooldownFrame.resizeHandle = cdResizeHandle;
@@ -1716,8 +1761,8 @@ local function CreateRowFrame()
                 tip:SetFrameStrata("TOOLTIP");
                 tip:SetFrameLevel(200);
                 tip:SetBackdrop({
-                    bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-                    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                    bgFile = 131071,
+                    edgeFile = 137057,
                     tile = true, tileSize = 16, edgeSize = 12,
                     insets = { left = 2, right = 2, top = 2, bottom = 2 },
                 });
@@ -1737,10 +1782,10 @@ local function CreateRowFrame()
                 if not tip.rows[i] then
                     tip.rows[i] = {};
                     tip.rows[i].spell = tip:CreateFontString(nil, "OVERLAY");
-                    tip.rows[i].spell:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    tip.rows[i].spell:SetFont(FONT_PATH, fontSize, "OUTLINE");
                     tip.rows[i].spell:SetJustifyH("LEFT");
                     tip.rows[i].status = tip:CreateFontString(nil, "OVERLAY");
-                    tip.rows[i].status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    tip.rows[i].status:SetFont(FONT_PATH, fontSize, "OUTLINE");
                     tip.rows[i].status:SetJustifyH("LEFT");
                 end
             end
@@ -1802,16 +1847,7 @@ local function CreateRowFrame()
             tip:Show();
             return;
         end
-        -- Build spell list per class (inline to avoid file-scope local)
-        local cls = hdata.classFile;
-        local tooltipSpells;
-        if cls == "DRUID" then
-            tooltipSpells = { INNERVATE_SPELL_ID, 20484 };
-        elseif cls == "SHAMAN" then
-            tooltipSpells = { MANA_TIDE_CAST_SPELL_ID };
-        elseif cls == "PRIEST" then
-            tooltipSpells = { 34433, SYMBOL_OF_HOPE_SPELL_ID };
-        end
+        local tooltipSpells = TOOLTIP_SPELLS_BY_CLASS[hdata.classFile];
         if not tooltipSpells then return; end
         local hasContent = false;
         for _, sid in ipairs(tooltipSpells) do
@@ -1823,8 +1859,8 @@ local function CreateRowFrame()
             tip:SetFrameStrata("TOOLTIP");
             tip:SetFrameLevel(200);
             tip:SetBackdrop({
-                bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                bgFile = 131071,
+                edgeFile = 137057,
                 tile = true, tileSize = 16, edgeSize = 12,
                 insets = { left = 2, right = 2, top = 2, bottom = 2 },
             });
@@ -1852,10 +1888,10 @@ local function CreateRowFrame()
                 if not row then
                     row = {};
                     row.spell = tip:CreateFontString(nil, "OVERLAY");
-                    row.spell:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    row.spell:SetFont(FONT_PATH, fontSize, "OUTLINE");
                     row.spell:SetJustifyH("LEFT");
                     row.status = tip:CreateFontString(nil, "OVERLAY");
-                    row.status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                    row.status:SetFont(FONT_PATH, fontSize, "OUTLINE");
                     row.status:SetJustifyH("LEFT");
                     tip.rows[count] = row;
                 end
@@ -2065,8 +2101,8 @@ local function CreateCdRowFrame()
             tip:SetFrameStrata("TOOLTIP");
             tip:SetFrameLevel(200);
             tip:SetBackdrop({
-                bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                bgFile = 131071,
+                edgeFile = 137057,
                 tile = true, tileSize = 16, edgeSize = 12,
                 insets = { left = 2, right = 2, top = 2, bottom = 2 },
             });
@@ -2104,10 +2140,10 @@ local function CreateCdRowFrame()
             if not row then
                 row = {};
                 row.status = tip:CreateFontString(nil, "OVERLAY");
-                row.status:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                row.status:SetFont(FONT_PATH, fontSize, "OUTLINE");
                 row.status:SetJustifyH("LEFT");
                 row.name = tip:CreateFontString(nil, "OVERLAY");
-                row.name:SetFont("Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE");
+                row.name:SetFont(FONT_PATH, fontSize, "OUTLINE");
                 row.name:SetJustifyH("LEFT");
                 tip.rows[i] = row;
             end
@@ -2496,8 +2532,8 @@ local function CreateContextMenu()
     menu:SetFrameStrata("TOOLTIP");
     menu:SetFrameLevel(100);
     menu:SetBackdrop({
-        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        bgFile = 131071,
+        edgeFile = 137057,
         tile = true, tileSize = 16, edgeSize = 12,
         insets = { left = 2, right = 2, top = 2, bottom = 2 },
     });
@@ -2809,6 +2845,46 @@ ShowCdRowRequestMenu = function(cdRow)
     if config.type == "target" then
         local caster = PickBestCaster(group);
         if not caster then return; end
+
+        -- Innervate auto-routing modes: "self" and "lowest" bypass the target menu
+        if spellId == INNERVATE_SPELL_ID and db then
+            local mode = db.innervateRequestMode or "menu";
+            if mode == "self" then
+                if GetTime() - lastWhisperTime < WHISPER_COOLDOWN then return; end
+                lastWhisperTime = GetTime();
+                local playerName = UnitName("player");
+                local maxMana = UnitPowerMax("player", POWER_TYPE_MANA);
+                local manaStr = "";
+                if maxMana > 0 then
+                    local pct = floor(UnitPower("player", POWER_TYPE_MANA) / maxMana * 100);
+                    manaStr = format(" (%d%% mana)", pct);
+                end
+                local msg = format("[HealerWatch] Cast %s on %s%s", group.spellName, playerName, manaStr);
+                local recipient = previewActive and playerName or caster.name;
+                SendChatMessage(msg, "WHISPER", nil, recipient);
+                return;
+            elseif mode == "lowest" then
+                if GetTime() - lastWhisperTime < WHISPER_COOLDOWN then return; end
+                -- Find the alive healer with the lowest mana
+                local lowestData, lowestPct;
+                for _, data in pairs(healers) do
+                    if data.isHealer and data.manaPercent >= 0 then
+                        if not lowestPct or data.manaPercent < lowestPct then
+                            lowestPct = data.manaPercent;
+                            lowestData = data;
+                        end
+                    end
+                end
+                if not lowestData then return; end
+                lastWhisperTime = GetTime();
+                local msg = format("[HealerWatch] Cast %s on %s (%d%% mana)", group.spellName, lowestData.name, lowestPct);
+                local recipient = previewActive and UnitName("player") or caster.name;
+                SendChatMessage(msg, "WHISPER", nil, recipient);
+                return;
+            end
+            -- mode == "menu": fall through to ShowTargetSubmenu below
+        end
+
         if cdRow.cdTooltip then cdRow.cdTooltip:Hide(); end
         ShowTargetSubmenu(caster.name, caster.guid, spellId, group.spellName, group.icon);
         return;
@@ -2960,8 +3036,8 @@ do
     frame:SetSize(SYNC_WIDTH, 140);
     frame:SetFrameStrata("DIALOG");
     frame:SetBackdrop({
-        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        bgFile = 131071,
+        edgeFile = 137057,
         tile = true, tileSize = 16, edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 },
     });
@@ -3131,7 +3207,6 @@ end
 --------------------------------------------------------------------------------
 
 -- Shared layout constants
-local FONT_PATH = "Fonts\\FRIZQT__.TTF";
 local COL_GAP = 2;
 local LEFT_MARGIN = 10;
 local RIGHT_MARGIN = 10;
@@ -3314,7 +3389,8 @@ local function RenderHealerRows(targetFrame, yOffset, totalWidth, maxNameWidth, 
         end
 
         -- Dead pulse: dead healer without soulstone/rebirth buff, and a rebirth is available
-        if data.manaPercent == -2 and not data.hasSoulstone and not data.hasRebirth and rebirthReady then
+        -- Only pulse during combat — no point after a wipe (but always pulse in preview)
+        if data.manaPercent == -2 and not data.hasSoulstone and not data.hasRebirth and rebirthReady and (previewActive or UnitAffectingCombat("player")) then
             row.needsRebirth = true;
             row.deadPulse:Show();
         else
@@ -3970,6 +4046,9 @@ BackgroundFrame:SetScript("OnUpdate", function(self, elapsed)
                     if data.hasSymbolOfHope and data.symbolOfHopeExpiry > 0 and data.symbolOfHopeExpiry <= now then
                         data.symbolOfHopeExpiry = now + 15;
                     end
+                    if data.hasShadowfiend and data.shadowfiendExpiry > 0 and data.shadowfiendExpiry <= now then
+                        data.shadowfiendExpiry = now + 15;
+                    end
                     if data.potionExpiry > 0 and data.potionExpiry <= now then
                         data.potionExpiry = now + 90;
                     end
@@ -4025,6 +4104,7 @@ local PREVIEW_DATA = {
     { name = "Soulstoned", classFile = "PALADIN", hasSoulstone = true, driftSeed = 0 },
     { name = "Rebirthed", classFile = "PRIEST", hasRebirth = true, driftSeed = 0 },
     { name = "Deadweight", classFile = "SHAMAN", driftSeed = 0 },  -- dead, no buffs (pulses when rebirth available)
+    { name = "Mindmender", classFile = "PRIEST", baseMana = 38, hasShadowfiend = true, driftSeed = 1.1 },
 };
 
 StartPreview = function()
@@ -4058,10 +4138,12 @@ StartPreview = function()
             hasSoulstone = td.hasSoulstone or false,
             hasRebirth = td.hasRebirth or false,
             hasSymbolOfHope = td.hasSymbolOfHope or false,
+            hasShadowfiend = td.hasShadowfiend or false,
             drinkExpiry = td.isDrinking and (GetTime() + 18) or 0,
             innervateExpiry = td.hasInnervate and (GetTime() + 12) or 0,
             manaTideExpiry = td.hasManaTide and (GetTime() + 8) or 0,
             symbolOfHopeExpiry = td.hasSymbolOfHope and (GetTime() + 15) or 0,
+            shadowfiendExpiry = td.hasShadowfiend and (GetTime() + 15) or 0,
             potionExpiry = td.hasPotion and (GetTime() + 90) or 0,
         };
     end
@@ -4091,6 +4173,7 @@ StartPreview = function()
     memberSubgroups["preview-guid-4"] = 2;  -- Tidecaller
     memberSubgroups["preview-guid-5"] = 1;  -- Potionboy
     memberSubgroups["preview-guid-6"] = 2;  -- Soulstoned
+    memberSubgroups["preview-guid-9"] = 1;  -- Mindmender
     memberSubgroups["preview-guid-ss"] = 1; -- Shadowlock (warlock)
     memberSubgroups["preview-guid-ss2"] = 2; -- Demonlock (warlock)
     memberSubgroups["preview-guid-druid2"] = 1; -- Barkskin (druid)
@@ -4404,6 +4487,9 @@ local function RegisterSettings()
     AddCheckbox("showSymbolOfHope", "Symbol of Hope",
         "Indicate when a healer is receiving mana from Symbol of Hope.");
 
+    AddCheckbox("showShadowfiend", "Shadowfiend",
+        "Indicate when a priest has Shadowfiend active (15s summon for mana recovery).");
+
     AddCheckbox("showStatusDuration", "Buff Durations",
         "Show remaining seconds on active buffs like Innervate, Mana Tide, and Drinking.");
 
@@ -4416,11 +4502,29 @@ local function RegisterSettings()
     local cdReqInit = AddCheckbox("enableCdRequest", "Click-to-Request Cooldowns",
         "Left-click rows to request cooldowns via whisper.\n\nHealer rows: Alive healers open a menu of available cooldowns (Innervate, Soulstone). Dead healers with a Soulstone or Rebirth buff are whispered to accept it. Dead healers with an amber pulse are matched to the best available Rebirth druid.\n\nCooldown rows: Innervate, Rebirth, and Soulstone open a target selection menu. Mana Tide and Symbol of Hope whisper the caster directly when the amber Request pulse is active.");
 
+    -- Innervate request mode dropdown
+    local modeMap = { menu = 1, self = 2, lowest = 3 };
+    local modeReverse = { "menu", "self", "lowest" };
+    local innModeSetting = Settings.RegisterProxySetting(category,
+        "HEALERWATCH_INNERVATE_MODE", Settings.VarType.Number, "Innervate Request Mode",
+        modeMap[db.innervateRequestMode] or 1,
+        function() return modeMap[db.innervateRequestMode] or 1; end,
+        function(value) db.innervateRequestMode = modeReverse[value] or "menu"; end);
+    local innModeInit = Settings.CreateDropdown(category, innModeSetting, function()
+        local container = Settings.CreateControlTextContainer();
+        container:Add(1, "Target Menu", "Show a menu of eligible targets to receive Innervate. You pick who gets it.");
+        container:Add(2, "Auto: Self", "Automatically whisper the best available Innervate caster to cast it on you.");
+        container:Add(3, "Auto: Lowest Mana", "Automatically whisper the best available Innervate caster to cast it on whichever healer currently has the lowest mana.");
+        return container:GetData();
+    end, "What happens when you click an Innervate cooldown row.\n\nTarget Menu: Opens a list of eligible targets — you choose who receives Innervate.\n\nAuto: Self: Instantly whispers the caster to Innervate you (the player clicking).\n\nAuto: Lowest Mana: Instantly whispers the caster to Innervate whichever healer has the lowest mana right now.");
+    innModeInit:SetParentInitializer(cdReqInit,
+        function() return db.enableCdRequest; end);
+
     local innThreshInit = AddSlider("innervateRequestThreshold", "Innervate Target Threshold (%)",
         "When clicking an Innervate cooldown row, only show targets at or below this mana percentage. Set to 100 to always show all mana users.",
         0, 100, 5);
-    innThreshInit:SetParentInitializer(cdReqInit,
-        function() return db.enableCdRequest; end);
+    innThreshInit:SetParentInitializer(innModeInit,
+        function() return db.enableCdRequest and db.innervateRequestMode == "menu"; end);
 
     -------------------------
     -- Section: Cooldown Tracking
@@ -4673,6 +4777,19 @@ local function OnEvent(self, event, ...)
             end
         else
             db.savedCooldowns = nil;
+        end
+
+        -- Persist confirmed healer status so /reload doesn't re-show (?) indicators.
+        if db then
+            local saved = {};
+            local any = false;
+            for guid, data in pairs(healers) do
+                if data.inspectConfirmed and data.isHealer ~= nil then
+                    saved[guid] = { isHealer = data.isHealer };
+                    any = true;
+                end
+            end
+            db.savedHealerStatus = any and saved or nil;
         end
 
     elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD"

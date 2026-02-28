@@ -2,7 +2,7 @@
 ## Title: HealerWatch
 ## Notes: Tracks healer mana in group content with smart healer detection via talent inspection
 ## Author: clearcmos
-## Version: 1.2.1
+## Version: 1.3.0
 ## SavedVariables: HealerWatchDB
 
 HealerWatch.lua

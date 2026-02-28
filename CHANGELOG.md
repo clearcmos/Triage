@@ -1,3 +1,21 @@
+## v1.3.0
+
+### Added
+- Shadowfiend status indicator on priest healer rows — shows a 15s countdown when a priest summons Shadowfiend (tracked via combat log, not a buff). Toggleable via `showShadowfiend` in Options.
+- Innervate request modes — three routing options when clicking an Innervate cooldown row: Target Menu (pick who gets it), Auto: Self (request for yourself), Auto: Lowest Mana (request for the lowest-mana healer). New dropdown in Options under Click-to-Request.
+- Healer status persistence across /reload — confirmed healer spec status no longer resets on reload, preventing "(?) " indicators from reappearing.
+- 9th preview healer "Mindmender" (Priest with Shadowfiend active) in demo mode.
+
+### Fixed
+- Dead healer amber pulse no longer shows after a wipe — only pulses during combat.
+- Average mana no longer includes unconfirmed/provisional healers, preventing false low-mana warnings when inviting out-of-range players.
+- Out-of-range healers no longer show 0% mana — keeps previous value until real data arrives.
+
+### Changed
+- Replaced string texture paths with numeric FileDataIDs for backdrops and resize handles (performance).
+- Hoisted sort comparator and tooltip spell tables to file scope (reduced per-frame allocations).
+- Consolidated FONT_PATH constant to a single definition in the constants section.
+
 ## v1.2.1
 
 ### Fixed

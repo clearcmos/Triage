@@ -18,7 +18,7 @@ Built specifically for **TBC Classic Anniversary**.
 - **Sorting** - Sort healers by lowest mana first or alphabetically
 
 **Recovery State Tracking**
-- **Status indicators** - Shows when healers are Drinking, have Innervate, Symbol of Hope, or Mana Tide Totem active, with optional durations. Text or icon display modes.
+- **Status indicators** - Shows when healers are Drinking, have Innervate, Symbol of Hope, Mana Tide Totem, or Shadowfiend active, with optional durations. Text or icon display modes.
 - **Potion tracking** - Tracks mana/healing potion cooldowns (2 min) via combat log
 - **Healer tooltips** - Hover a healer row to see their personal recovery cooldown timers (Druids: Innervate, Rebirth; Shamans: Mana Tide; Priests: Shadowfiend, Symbol of Hope)
 - **Soulstone indicator** - Purple status on dead healers who have a Soulstone buff
@@ -32,7 +32,8 @@ Built specifically for **TBC Classic Anniversary**.
 
 **Click-to-Request Coordination**
 - **Request cooldowns** - Click a healer row to request available spells for them (auto-routes to best caster). Click a cooldown row for caster/target selection. Bear-form druids deprioritized for Innervate/Rebirth. Innervate target threshold is configurable (default: show all mana users).
-- **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available. Click to auto-whisper the best available druid.
+- **Innervate request modes** - Three routing options when clicking an Innervate cooldown row: Target Menu (pick who gets it), Auto: Self (request for yourself), Auto: Lowest Mana (request for the lowest-mana healer)
+- **Dead healer pulse** - Amber glow on dead healers when a Rebirth is available (combat only, suppressed after wipes). Click to auto-whisper the best available druid.
 - **Dead healer accept** - Clicking a dead healer who has a Soulstone or Rebirth buff whispers them to accept it
 
 **Group Coordination**
@@ -75,13 +76,14 @@ Type `/healerwatch` to open the options panel.
 - Separate cooldown frame toggle
 
 **Healer Status Indicators**
-- Show Drinking, Innervate, Mana Tide, Symbol of Hope, Soulstone, Rebirth status
+- Show Drinking, Innervate, Mana Tide, Symbol of Hope, Shadowfiend, Soulstone, Rebirth status
 - Show buff durations
 - Show potion cooldowns
 - Text or icon status display
 - Row hover highlight
 - Click-to-request cooldowns
-- Innervate target threshold (% mana to show in request menus)
+- Innervate request mode (Target Menu / Auto: Self / Auto: Lowest Mana)
+- Innervate target threshold (% mana to show in request menus, only in Target Menu mode)
 
 **Recovery Cooldowns**
 - Show/hide cooldown tracking section
